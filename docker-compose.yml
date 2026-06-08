@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  echonet-app:
+    build: .
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./models_saved:/app/models_saved
+      - ./ui:/app/ui
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

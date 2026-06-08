@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environments
+.env
+.venv
+venv/
+env/
+envs/
+*.whl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_*
+
+# Archives (large, not tracked)
+*.zip
+*.tar.gz
+*.7z
+*.rar
+
+# Data (large files, not tracked)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+data/splits/*
+!data/splits/.gitkeep
+
+# Models (binary weights, too large for git)
+models_saved/*
+!models_saved/.gitkeep
+
+# Docker
+.docker/
+*.log
+
+# Reports
+reports/
+*.html
+
+# OS
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,17 @@
+[project]
+name = "echonet-demo"
+version = "0.1.0"
+description = "EchoNet-Dynamic demo — echo video analysis with ResNet and U-Net"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "streamlit>=1.28.0",
+    "plotly>=5.15.0",
+    "Pillow>=10.0.0",
+    "tqdm>=4.65.0",
+]
