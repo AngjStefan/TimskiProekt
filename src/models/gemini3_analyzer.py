@@ -12,7 +12,7 @@ GEMINI_API_KEY = ""
 def generate_image(input_video_path: str) -> Image.Image:
     """
     Extracts the first frame from a video file, passes it to the Gemini image
-    model, and currently saves a local copy immediately for debugging before returning.
+    model, saves a local debug copy, and directly returns the PIL Image object.
     """
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
         raise ValueError("Gemini API Key is missing or not configured.")
@@ -32,10 +32,13 @@ def generate_image(input_video_path: str) -> Image.Image:
     pil_image = Image.fromarray(frame_rgb)
 
     prompt = (
-        "Outline the heart walls PRECISELY. Try your best not to go over white pixels. Superimpose a permanent 6-color structural contour line mapping if they are visible: "
-        "Red for Left Ventricle (LV), Orange for Right Ventricle (RV), Cyan for Mitral Valve (MV), "
-        "Magenta for Tricuspid Valve (TV), Green for Left Atrium (LA), and Yellow for Right Atrium (RA). "
-        "Overlay static text abbreviations next to each outlined chamber. Maintain original dimensions."
+        "Apply a semi-transparent, translucent color mask over the visible heart chambers and structures, "
+        "targeting ONLY the black and dark pixel regions (the cavities). Do NOT paint over, outline, or obscure "
+        "any white or bright tissue pixels—the white structures must remain completely untouched and clean. "
+        "The color fills must be vibrant but transparent, blending like a tint over the dark background: "
+        "Red mask for Left Ventricle (LV), Orange mask for Right Ventricle (RV), Cyan mask for Mitral Valve (MV), "
+        "Magenta mask for Tricuspid Valve (TV), Green mask for Left Atrium (LA), and Yellow mask for Right Atrium (RA). "
+        "Overlay small, static text abbreviations next to each masked region. Maintain the original image dimensions."
     )
 
     response = client.models.generate_content(
@@ -53,16 +56,16 @@ def generate_image(input_video_path: str) -> Image.Image:
         raise Exception("API returned an empty response. Likely blocked by safety filters.")
 
     for part in response.parts:
-        generated_image = part.as_image()
-        if generated_image is not None:
-            # Testing
-            generated_image.save("debug_gemini_output.png")
-            print("------------------------------------------------------------")
-            print("SUCCESS: Image saved locally to 'debug_gemini_output.png'")
-            print("------------------------------------------------------------")
-            return Image.open("debug_gemini_output.png")
+        if part.inline_data and part.inline_data.data:
+            # Reconstruct a clean, native PIL Image straight from raw bytes
+            clean_image = Image.open(io.BytesIO(part.inline_data.data))
 
-    raise Exception("The model processed the request but did not return a valid image.")
+            # (Optional) Keep your local debug save if you still want it
+            clean_image.save("debug_gemini_output.png")
+
+            return clean_image
+
+    return None
 
 def generate_medical_opinion(video_path: str) -> str:
     """
