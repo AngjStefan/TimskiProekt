@@ -1,4 +1,5 @@
 import sys
+import io
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -16,6 +17,7 @@ from src.preprocessing.extract_frames import extract_single_video
 from src.preprocessing.normalize import normalize_frames
 from src.postprocessing.contours import process_mask
 from src.visualization.overlay import overlay_mask
+from src.models.gemini3_analyzer import generate_image, generate_medical_opinion
 
 st.set_page_config(page_title="EchoNet-Dynamic Analysis", layout="wide")
 st.title("Echocardiogram Analysis — Model Comparison")
@@ -139,6 +141,60 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"U-Net: {e}")
 
+    # --- Google Gemini AI Section ---
+    st.header("Google Gemini AI Analysis")
+    st.markdown(
+        "Use Google's generative multimodal APIs to compute semantic structural tracking and evaluate clinical presentations.")
+
+    if "gemini_image" not in st.session_state:
+        st.session_state.gemini_image = None
+    if "gemini_opinion_text" not in st.session_state:
+        st.session_state.gemini_opinion_text = None
+
+    if st.button("Run Comprehensive AI Analysis", type="primary"):
+        with st.spinner("Processing frame and analyzing echocardiogram..."):
+            try:
+                # Now this stores a PIL.Image object
+                st.session_state.gemini_image = generate_image(tmp_path)
+                st.session_state.gemini_opinion_text = generate_medical_opinion(tmp_path)
+                st.success("Analysis complete!")
+            except Exception as e:
+                st.error(f"API Error: {e}")
+
+    # Display results
+    if st.session_state.gemini_image or st.session_state.gemini_opinion_text:
+        col_image, col_gemini = st.columns(2)
+
+        with col_image:
+            if st.session_state.gemini_image:
+                st.subheader("Contour Overlay")
+
+                st.image(st.session_state.gemini_image, caption="Generated Frame Contours")
+
+                # Convert the PIL Image to bytes
+                buf = io.BytesIO()
+                st.session_state.gemini_image.save(buf, format="PNG")
+                byte_im = buf.getvalue()
+
+                st.download_button(
+                    label="Download Processed Image",
+                    data=byte_im,
+                    file_name="gemini_structural_contours.png",
+                    mime="image/png"
+                )
+
+        with col_gemini:
+            if st.session_state.gemini_opinion_text:
+                st.subheader("Gemini Opinion")
+                st.markdown("### Clinical Assessment")
+                st.write(st.session_state.gemini_opinion_text)
+
+                st.download_button(
+                    label="Download Opinion (.txt)",
+                    data=st.session_state.gemini_opinion_text.encode("utf-8"),
+                    file_name="gemini_clinical_assessment.txt",
+                    mime="text/plain"
+                )
     Path(tmp_path).unlink(missing_ok=True)
 
 else:
