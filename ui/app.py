@@ -144,7 +144,22 @@ if uploaded_file is not None:
     # --- Google Gemini AI Section ---
     st.header("Google Gemini AI Analysis")
     st.markdown(
-        "Use Google's generative multimodal APIs to compute semantic structural tracking and evaluate clinical presentations.")
+        "Use Google's generative multimodal APIs to compute semantic structural tracking and evaluate clinical presentations."
+    )
+
+    model_tier = st.selectbox(
+        "Select Gemini Model Suite Configuration",
+        options=["Gemini 3 Flash", "Gemini 3 Pro"],
+        index=0,
+        help="Toggle between high-speed performance (Flash) and heavy clinical reasoning capabilities (Pro)."
+    )
+
+    if model_tier == "Gemini 3 Flash":
+        target_image_model = "gemini-3.1-flash-image"
+        target_opinion_model = "gemini-3.1-flash-lite"
+    else:
+        target_image_model = "gemini-3-pro-image"
+        target_opinion_model = "gemini-3.1-pro-preview"
 
     if "gemini_image" not in st.session_state:
         st.session_state.gemini_image = None
@@ -152,11 +167,11 @@ if uploaded_file is not None:
         st.session_state.gemini_opinion_text = None
 
     if st.button("Run Comprehensive AI Analysis", type="primary"):
-        with st.spinner("Processing frame and analyzing echocardiogram..."):
+        with st.spinner(f"Processing framework utilizing {model_tier}..."):
             try:
-                # Now this stores a PIL.Image object
-                st.session_state.gemini_image = generate_image(tmp_path)
-                st.session_state.gemini_opinion_text = generate_medical_opinion(tmp_path)
+                st.session_state.gemini_image = generate_image(tmp_path, model_name=target_image_model)
+                st.session_state.gemini_opinion_text = generate_medical_opinion(tmp_path,
+                                                                                model_name=target_opinion_model)
                 st.success("Analysis complete!")
             except Exception as e:
                 st.error(f"API Error: {e}")
@@ -168,8 +183,7 @@ if uploaded_file is not None:
         with col_image:
             if st.session_state.gemini_image:
                 st.subheader("Contour Overlay")
-
-                st.image(st.session_state.gemini_image, caption="Generated Frame Contours")
+                st.image(st.session_state.gemini_image, caption=f"Generated Frame Contours ({model_tier}) \n Image may not be precise")
 
                 # Convert the PIL Image to bytes
                 buf = io.BytesIO()

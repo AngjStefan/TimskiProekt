@@ -9,17 +9,16 @@ from google.genai import types
 
 GEMINI_API_KEY = ""
 
-def generate_image(input_video_path: str) -> Image.Image:
+def generate_image(input_video_path: str, model_name: str) -> Image.Image:
     """
-    Extracts the first frame from a video file, passes it to the Gemini image
-    model, saves a local debug copy, and directly returns the PIL Image object.
+    Extracts the first frame from a video file, passes it to the specified Gemini image
+    model with strict isolation guidelines, and returns a clean PIL Image object.
     """
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
         raise ValueError("Gemini API Key is missing or not configured.")
 
     client = genai.Client(api_key=GEMINI_API_KEY)
 
-    # Extract the first frame
     cap = cv2.VideoCapture(input_video_path)
     ret, frame = cap.read()
     cap.release()
@@ -27,26 +26,29 @@ def generate_image(input_video_path: str) -> Image.Image:
     if not ret:
         raise ValueError("Failed to read the video file to extract a frame.")
 
-    # Convert the frame from BGR to RGB, then to PIL Image
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(frame_rgb)
 
+    # Tightened prompt to eliminate segment crowding/hallucinations
     prompt = (
-        "Apply a semi-transparent, translucent color mask over the visible heart chambers and structures, "
+        "Apply a semi-transparent, translucent color mask over ONLY THE VISIBLE heart chambers and structures, "
         "targeting ONLY the black and dark pixel regions (the cavities). Do NOT paint over, outline, or obscure "
         "any white or bright tissue pixels—the white structures must remain completely untouched and clean. "
         "The color fills must be vibrant but transparent, blending like a tint over the dark background: "
         "Red mask for Left Ventricle (LV), Orange mask for Right Ventricle (RV), Cyan mask for Mitral Valve (MV), "
         "Magenta mask for Tricuspid Valve (TV), Green mask for Left Atrium (LA), and Yellow mask for Right Atrium (RA). "
+        "If any of these 6 structures are not clearly visible or are partially obscured, only mask the clearly visible sections and leave the rest unmasked. "
         "Overlay small, static text abbreviations next to each masked region. Maintain the original image dimensions."
     )
 
+    config_params = {"response_modalities": ['IMAGE']}
+    if "pro" in model_name.lower() or "preview" in model_name.lower():
+        config_params["thinking_config"] = types.ThinkingConfig(thinking_level="High")
+
     response = client.models.generate_content(
-        model="gemini-3.1-flash-image",
+        model=model_name,
         contents=[prompt, pil_image],
-        config=types.GenerateContentConfig(
-            response_modalities=['IMAGE']
-        )
+        config=types.GenerateContentConfig(**config_params)
     )
 
     if response.parts is None:
@@ -57,19 +59,17 @@ def generate_image(input_video_path: str) -> Image.Image:
 
     for part in response.parts:
         if part.inline_data and part.inline_data.data:
-            # Reconstruct a clean, native PIL Image straight from raw bytes
             clean_image = Image.open(io.BytesIO(part.inline_data.data))
-
-            # (Optional) Keep your local debug save if you still want it
             clean_image.save("debug_gemini_output.png")
-
             return clean_image
 
     return None
 
-def generate_medical_opinion(video_path: str) -> str:
+
+def generate_medical_opinion(video_path: str, model_name: str) -> str:
     """
-    Uploads the video to gemini-3.1-flash-lite for an expert medical evaluation.
+    Uploads the video to the chosen Gemini text/multimodal model for an evaluation
+    anchored purely on clearly visible perspectives.
     """
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
         raise ValueError("Gemini API Key is missing or not configured.")
@@ -90,7 +90,13 @@ def generate_medical_opinion(video_path: str) -> str:
 
         agent_prompt = """
         You are a Board-Certified Cardiologist and an elite specialist in Advanced Echocardiography Analysis. 
-        Evaluate this uploaded Apical 4-Chamber (A4C) view echocardiogram video for clinical presentation data.
+        Evaluate this uploaded echocardiogram video for clinical presentation data.
+
+        CRITICAL CLINICAL BOUNDARY:
+        Base your findings, assumptions, and conclusions STRICTLY on what is explicitly visible in the footage. 
+        If a structural region, specific chamber, wall, or valve system is obscured, poorly resolved, or entirely 
+        outside the visual field, you must explicitly document that specific section as 'Visualization insufficient for clinical evaluation' 
+        or state that no diagnostic inference can be made for that area due to missing visualization. Do not speculate or extrapolate.
 
         Analyze systematically:
         1. Ventricular Performance
@@ -101,9 +107,14 @@ def generate_medical_opinion(video_path: str) -> str:
         Provide your assessment using highly professional, clinical language. Conclude with a strong, mandatory medical disclaimer emphasizing that your analysis is an AI-generated assessment for educational demonstration and must be formally verified by a physician.
         """
 
+        config_params = {}
+        if "pro" in model_name.lower() or "preview" in model_name.lower():
+            config_params["thinking_config"] = types.ThinkingConfig(thinking_level="High")
+
         response = client.models.generate_content(
-            model="gemini-3.1-flash-lite",
-            contents=[video_file, agent_prompt]
+            model=model_name,
+            contents=[video_file, agent_prompt],
+            config=types.GenerateContentConfig(**config_params)
         )
 
         return response.text
