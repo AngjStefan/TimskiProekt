@@ -81,7 +81,11 @@ if uploaded_file is not None:
         try:
             model18 = load_regression("resnet18")
             with torch.no_grad():
-                ef18 = model18(video_t).item() * 100
+                ef18 = model18(video_t).item()
+                ef18 = max(0.0,
+                           min(1.0,ef18,))
+                ef18 *= 100
+
             st.metric("EF (%)", f"{ef18:.1f}")
         except Exception as e:
             st.error(f"ResNet18: {e}")
@@ -98,7 +102,9 @@ if uploaded_file is not None:
     st.header("Left Ventricle Segmentation")
     seg_frame = st.slider("Select frame", 0, frames_gray.shape[0] - 1, 0)
 
-    frame = frames_gray[seg_frame]
+    frame = cv2.resize(
+        frames_gray[seg_frame],
+        (FRAME_SIZE_SEG, FRAME_SIZE_SEG),)
     frame_rgb = np.stack([frame] * 3, axis=-1).astype(np.uint8)
     frame_input = normalize_frames(frame)
     frame_input = np.stack([frame_input] * 3, axis=-1)
@@ -108,14 +114,47 @@ if uploaded_file is not None:
         model_unet = load_unet()
         with torch.no_grad():
             logits = model_unet(frame_t)
-            mask = torch.sigmoid(logits).squeeze().cpu().numpy()
+            probs = torch.sigmoid(
+                logits
+            ).squeeze().cpu().numpy()
+            # threshold
+            mask = (
+                    probs > 0.8
+            ).astype(np.uint8)
 
-        st.subheader("U-Net Segmentation Results")
+            # keep only largest connected region
+            num, labels, stats, _ = cv2.connectedComponentsWithStats(
+                mask
+            )
 
-        # Post-process with contours
-        mask_resized = cv2.resize(mask, (FRAME_SIZE, FRAME_SIZE),
-                                  interpolation=cv2.INTER_NEAREST)
-        contour_data = process_mask(mask_resized, frame_rgb)
+            if num > 1:
+                largest = (
+                        1 +
+                        np.argmax(
+                            stats[1:, cv2.CC_STAT_AREA]
+                        )
+                )
+
+                mask = (
+                        labels == largest
+                ).astype(np.uint8)
+
+        st.subheader(
+            "U-Net Segmentation Results"
+        )
+
+        mask_resized = mask
+
+        contour_data = process_mask(
+            mask_resized,
+            frame_rgb,
+        )
+
+        st.write(
+            "Mask probability:",
+            float(probs.min()),
+            float(probs.max()),
+        )
 
         col3, col4, col5 = st.columns(3)
         with col3:

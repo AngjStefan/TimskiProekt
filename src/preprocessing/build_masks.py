@@ -35,13 +35,44 @@ def build_all_masks(
     grouped = df.groupby(["FileName", "Frame"])
 
     for (fname, frame), grp in tqdm(grouped, desc="Building masks"):
-        xs = grp["X1"].values
-        ys = grp["Y1"].values
+        orig_h = 112
+        orig_w = 112
+
         scale = frame_size / 112.0
-        pts = list(zip(xs * scale, ys * scale))
-        mask = tracing_to_mask(pts, frame_size, frame_size)
+
+        new_h = int(orig_h * scale)
+        new_w = int(orig_w * scale)
+
+        pad_y = (frame_size - new_h) // 2
+        pad_x = (frame_size - new_w) // 2
+
+        left = np.stack([
+            grp["X1"].values * scale + pad_x,
+            grp["Y1"].values * scale + pad_y,
+        ], axis=1)
+
+        right = np.stack([
+            grp["X2"].values[::-1] * scale + pad_x,
+            grp["Y2"].values[::-1] * scale + pad_y,
+        ], axis=1)
+
+        contour = np.concatenate(
+            [left, right],
+            axis=0,
+        )
+
+        mask = tracing_to_mask(
+            contour.tolist(),
+            frame_size,
+            frame_size,
+        )
+
         out_name = f"{Path(fname).stem}_frame{int(frame)}.npy"
-        np.save(str(out / out_name), mask)
+
+        np.save(
+            out / out_name,
+            mask,
+        )
 
     print(f"Saved {len(grouped)} masks to {out}")
 

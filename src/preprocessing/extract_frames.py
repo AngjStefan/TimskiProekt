@@ -11,48 +11,83 @@ from src.config import RAW_VIDEOS, FRAME_SIZE, TARGET_FPS, RAW_DIR
 
 
 def extract_frames_from_avi(
-    avi_bytes: bytes,
-    target_size: int = FRAME_SIZE,
-    max_frames: int | None = None,
-) -> np.ndarray:
-    fd, tmp_path = tempfile.mkstemp(suffix=".avi")
+    avi_bytes,
+    target_size=FRAME_SIZE,
+    max_frames=None,
+):
+    fd, tmp_path = tempfile.mkstemp(
+        suffix=".avi"
+    )
+
     try:
         os.write(fd, avi_bytes)
         os.close(fd)
+
         cap = cv2.VideoCapture(tmp_path)
+
         frames = []
+
         while True:
+
             ret, frame = cap.read()
+
             if not ret:
                 break
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-            gray = cv2.resize(gray, (target_size, target_size))
+
+            gray = (
+                cv2.cvtColor(
+                    frame,
+                    cv2.COLOR_BGR2GRAY,
+                )
+                if frame.ndim == 3
+                else frame
+            )
+
+            gray = cv2.resize(
+                gray,
+                (
+                    target_size,
+                    target_size,
+                ),
+                interpolation=cv2.INTER_AREA,
+            )
+
             frames.append(gray)
-            if max_frames and len(frames) >= max_frames:
+
+            if (
+                max_frames is not None
+                and len(frames) >= max_frames
+            ):
                 break
+
         cap.release()
-        if not frames:
-            raise ValueError("No frames extracted from video")
-        return np.stack(frames, axis=0).astype(np.uint8)
+
+        return np.stack(
+            frames
+        ).astype(np.uint8)
+
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        os.unlink(tmp_path)
 
 
 def preprocess_all(
     zip_path: Path,
     dest_dir: Path,
     target_size: int = FRAME_SIZE,
-    max_videos: int | None = None,
+    video_ids: int | None = None,
 ) -> list[str]:
     dest_dir.mkdir(parents=True, exist_ok=True)
     z = zipfile.ZipFile(str(zip_path), "r")
     video_entries = sorted(n for n in z.namelist() if n.endswith(".avi"))
 
-    if max_videos is not None:
-        video_entries = video_entries[:max_videos]
+    if video_ids:
+        allowed = set(video_ids)
+
+        video_entries = [
+            x
+            for x in video_entries
+            if Path(x).stem in allowed
+        ]
 
     processed = []
     for entry in tqdm(video_entries, desc="Extracting frames"):

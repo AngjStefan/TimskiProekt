@@ -99,17 +99,28 @@ class EchoSegmentationDataset(Dataset):
         self.masks_dir = Path(masks_dir or PROCESSED_DIR / "masks")
 
         import os
-        mask_files = sorted(os.listdir(str(self.masks_dir)))
+        mask_files = sorted(os.listdir(self.masks_dir))
+
+        allowed = set(
+            self.df["FileName"]
+            .astype(str)
+            .str.replace(".avi", "", regex=False)
+        )
+
         self.samples = []
+
         for mf in mask_files:
+
             parts = mf.replace(".npy", "").split("_frame")
+
             if len(parts) != 2:
                 continue
-            vid, fr = parts[0], int(parts[1])
-            df_row = df[df["FileName"] == vid]
-            if len(df_row) == 0:
-                continue
-            self.samples.append((vid, fr))
+
+            vid = parts[0]
+            fr = int(parts[1])
+
+            if vid in allowed:
+                self.samples.append((vid, fr))
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -122,7 +133,7 @@ class EchoSegmentationDataset(Dataset):
 
         frame = frames[frame_n] if frame_n < len(frames) else frames[-1]
         frame = cv2.resize(frame, (self.frame_size, self.frame_size))
-        frame = normalize_frames(frame)
+        frame = frame.astype(np.float32) / 255.0
         frame = np.stack([frame] * 3, axis=-1)
 
         mask = cv2.resize(mask, (self.frame_size, self.frame_size), interpolation=cv2.INTER_NEAREST)
@@ -142,10 +153,10 @@ def get_regression_loaders(
     train_ds = EchoVideoDataset("TRAIN", n_frames=n_frames,
                                 subset_size=subset_size, file_list=file_list)
     val_ds = EchoVideoDataset("VAL", n_frames=n_frames,
-                              subset_size=min(subset_size, 5) if subset_size else None,
+                              subset_size=subset_size if subset_size else None,
                               file_list=file_list)
     test_ds = EchoVideoDataset("TEST", n_frames=n_frames,
-                               subset_size=min(subset_size, 5) if subset_size else None,
+                               subset_size=subset_size if subset_size else None,
                                file_list=file_list)
     return (
         DataLoader(train_ds, batch_size, shuffle=True, num_workers=2, pin_memory=True),
@@ -162,10 +173,10 @@ def get_segmentation_loaders(
     train_ds = EchoSegmentationDataset("TRAIN",
                                        subset_size=subset_size, file_list=file_list)
     val_ds = EchoSegmentationDataset("VAL",
-                                     subset_size=min(subset_size, 5) if subset_size else None,
+                                     subset_size=subset_size if subset_size else None,
                                      file_list=file_list)
     test_ds = EchoSegmentationDataset("TEST",
-                                      subset_size=min(subset_size, 5) if subset_size else None,
+                                      subset_size=subset_size if subset_size else None,
                                       file_list=file_list)
     return (
         DataLoader(train_ds, batch_size, shuffle=True, num_workers=2, pin_memory=True),

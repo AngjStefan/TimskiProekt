@@ -41,7 +41,7 @@ def train_one_epoch(
         images, masks = images.to(device), masks.to(device)
         optimizer.zero_grad()
         logits = model(images)
-        loss = bce(logits, masks) + dice(logits, masks)
+        loss = 0.3 * bce(logits, masks) + 0.7 * dice(logits, masks)
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * images.size(0)
@@ -84,7 +84,11 @@ def main(subset_size: int | None = None, file_list: str | None = None):
         print("ERROR: No training data found. Run 'python run_pipeline.py' first.")
         sys.exit(1)
 
-    model = UNet(n_channels=3, n_classes=1).to(device)
+    model = UNet(
+        n_channels=3,
+        n_classes=1,
+        pretrained=True,
+    ).to(device)
     bce = nn.BCEWithLogitsLoss()
     dice = DiceLoss()
     optimizer = torch.optim.AdamW(
