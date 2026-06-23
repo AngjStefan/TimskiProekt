@@ -91,17 +91,20 @@ def get_key_points(contour) -> dict:
     min_y, max_y = pts[:, 1].min(), pts[:, 1].max()
     y_range = max_y - min_y
 
-    apex = tuple(pts[pts[:, 1].argmax()])
+    # Apex is the narrowest/pointiest part = smallest y = TOP of image
+    apex = tuple(pts[pts[:, 1].argmin()])
 
-    top_mask = pts[:, 1] < min_y + y_range * 0.2
-    top_pts = pts[top_mask]
-    if len(top_pts) > 1:
-        basal_septal = tuple(top_pts[top_pts[:, 0].argmin()])
-        basal_lateral = tuple(top_pts[top_pts[:, 0].argmax()])
+    # Basal points are at the widest part = largest y = BOTTOM of image
+    bottom_mask = pts[:, 1] > max_y - y_range * 0.2
+    bottom_pts = pts[bottom_mask]
+    if len(bottom_pts) > 1:
+        basal_septal = tuple(bottom_pts[bottom_pts[:, 0].argmin()])
+        basal_lateral = tuple(bottom_pts[bottom_pts[:, 0].argmax()])
     else:
         basal_septal = tuple(pts[pts[:, 0].argmin()])
         basal_lateral = tuple(pts[pts[:, 0].argmax()])
 
+    # Mid points are in the middle y-range
     mid_mask = (pts[:, 1] >= min_y + y_range * 0.4) & (pts[:, 1] <= min_y + y_range * 0.6)
     mid_pts = pts[mid_mask]
     if len(mid_pts) > 1:
