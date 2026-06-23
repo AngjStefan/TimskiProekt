@@ -1,5 +1,6 @@
 import sys
 import io
+import base64
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -125,6 +126,21 @@ def get_ef_classification(ef: float) -> dict:
         }
 
 
+def _show_gif(gif_path, placeholder):
+    if not gif_path or not os.path.exists(gif_path):
+        placeholder.info("Unavailable")
+        return
+    with open(gif_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    placeholder.markdown(
+        f'<div style="max-width:600px;max-height:600px;margin:0 auto;text-align:center;padding-bottom:1rem;">'
+        f'<img src="data:image/gif;base64,{b64}" '
+        f'style="width:100%;height:100%;object-fit:contain;display:block;">'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _create_gif(frames_rgb, fps_out=20, max_frames=60, loop=0, target_size=None):
     step = max(1, len(frames_rgb) // max_frames)
     selected = [frames_rgb[i] for i in range(0, len(frames_rgb), step)]
@@ -159,46 +175,47 @@ if uploaded_file is not None:
     sampled = np.stack([sampled, sampled, sampled], axis=-1)
     video_t = torch.from_numpy(sampled).permute(0, 3, 1, 2).unsqueeze(0).float().to(device)
 
-    # --- EF Prediction ---
-    ef_predicted = None
-    try:
-        model18 = load_regression("resnet18")
-        with torch.no_grad():
-            ef_val = model18(video_t).item()
-            ef_val = max(0.0, min(1.0, ef_val))
-            ef_predicted = ef_val * 100
-    except Exception as e:
-        st.error(f"ResNet18: {e}")
-
     model_unet = load_unet()
 
-    # --- Process all frames through U-Net for overlay display (cached per file) ---
     original_gif_path = None
     processed_gif_path = None
     processed_video_path = None
+    ef_predicted = None
 
     upload_id = f"{uploaded_file.name}_{uploaded_file.size}"
     need_processing = st.session_state.get("_upload_id") != upload_id
 
-    if need_processing:
-        st.session_state._upload_id = upload_id
-        for old_key in ["_orig_gif", "_proc_gif", "_proc_mp4"]:
-            old_path = st.session_state.get(old_key)
-            if old_path and os.path.exists(old_path):
-                try:
-                    os.unlink(old_path)
-                except Exception:
-                    pass
-                st.session_state[old_key] = None
-
-    cached_path = st.session_state.get("_orig_gif")
-    if cached_path and os.path.exists(cached_path):
-        original_gif_path = cached_path
-        processed_gif_path = st.session_state["_proc_gif"]
-        processed_video_path = st.session_state.get("_proc_mp4")
-    else:
+    with st.spinner("Loading analysis ..."):
+        # --- EF Prediction ---
         try:
-            with st.spinner("Generating segmentation overlay animation ..."):
+            model18 = load_regression("resnet18")
+            with torch.no_grad():
+                ef_val = model18(video_t).item()
+                ef_val = max(0.0, min(1.0, ef_val))
+                ef_predicted = ef_val * 100
+        except Exception as e:
+            st.error(f"ResNet18: {e}")
+
+        # --- Clean up old files from previous upload ---
+        if need_processing:
+            st.session_state._upload_id = upload_id
+            for old_key in ["_orig_gif", "_proc_gif", "_proc_mp4"]:
+                old_path = st.session_state.get(old_key)
+                if old_path and os.path.exists(old_path):
+                    try:
+                        os.unlink(old_path)
+                    except Exception:
+                        pass
+                    st.session_state[old_key] = None
+
+        # --- Process all frames through U-Net (cached per file) ---
+        cached_path = st.session_state.get("_orig_gif")
+        if cached_path and os.path.exists(cached_path):
+            original_gif_path = cached_path
+            processed_gif_path = st.session_state["_proc_gif"]
+            processed_video_path = st.session_state.get("_proc_mp4")
+        else:
+            try:
                 original_rgb = []
                 processed_frames = []
                 for i in range(T):
@@ -229,8 +246,30 @@ if uploaded_file is not None:
                 st.session_state["_orig_gif"] = original_gif_path
                 st.session_state["_proc_gif"] = processed_gif_path
                 st.session_state["_proc_mp4"] = processed_video_path
+            except Exception as e:
+                st.error(f"U-Net video processing: {e}")
+
+        # --- Pre-compute default frame (frame 0) segmentation for instant display ---
+        try:
+            seg_frame_0 = cv2.resize(frames_gray[0], (FRAME_SIZE_SEG, FRAME_SIZE_SEG))
+            frame_rgb_0 = np.stack([seg_frame_0] * 3, axis=-1).astype(np.uint8)
+            frame_input_0 = np.stack([seg_frame_0.astype(np.float32)] * 3, axis=-1)
+            frame_input_0 = normalize_image(frame_input_0)
+            frame_t_0 = torch.from_numpy(frame_input_0).permute(2, 0, 1).unsqueeze(0).float().to(device)
+            with torch.no_grad():
+                logits = model_unet(frame_t_0)
+                probs = torch.sigmoid(logits).squeeze().cpu().numpy()
+                mask_0 = (probs > 0.8).astype(np.uint8)
+                num, labels, stats, _ = cv2.connectedComponentsWithStats(mask_0)
+                if num > 1:
+                    largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+                    mask_0 = (labels == largest).astype(np.uint8)
+            contour_data_0 = process_mask(mask_0, frame_rgb_0)
+            st.session_state["_def_seg_mask"] = mask_0
+            st.session_state["_def_seg_contour"] = contour_data_0
+            st.session_state["_def_seg_frame_rgb"] = frame_rgb_0
         except Exception as e:
-            st.error(f"U-Net video processing: {e}")
+            st.error(f"Default frame pre-computation: {e}")
 
     # ============================
     # VIDEO COMPARISON SECTION
@@ -241,20 +280,15 @@ if uploaded_file is not None:
 
     with col_v1:
         st.markdown("<h3 style='text-align:center;'>Original Video</h3>", unsafe_allow_html=True)
-        if original_gif_path and os.path.exists(original_gif_path):
-            st.image(original_gif_path, width='stretch')
-        else:
-            st.info("Animation unavailable")
+        _show_gif(original_gif_path, st)
 
     with col_v2:
         st.markdown("<h3 style='text-align:center;'>Segmentation Overlay</h3>", unsafe_allow_html=True)
-        if processed_gif_path and os.path.exists(processed_gif_path):
-            st.image(processed_gif_path, width='stretch')
-        else:
-            st.info("Processing unavailable")
+        _show_gif(processed_gif_path, st)
 
     # Download button centered
     if processed_video_path and os.path.exists(processed_video_path):
+        st.markdown("<div style='padding-top:1.5rem;'>&nbsp;</div>", unsafe_allow_html=True)
         _, col_center, _ = st.columns([1, 2, 1])
         with col_center:
             st.download_button(
@@ -346,30 +380,33 @@ if uploaded_file is not None:
         (FRAME_SIZE_SEG, FRAME_SIZE_SEG),
     )
     frame_rgb = np.stack([frame] * 3, axis=-1).astype(np.uint8)
-    frame_input = np.stack([frame.astype(np.float32)] * 3, axis=-1)
-    frame_input = normalize_image(frame_input)
-    frame_t = torch.from_numpy(frame_input).permute(2, 0, 1).unsqueeze(0).float().to(device)
 
     try:
-        with torch.no_grad():
-            logits = model_unet(frame_t)
-            probs = torch.sigmoid(logits).squeeze().cpu().numpy()
-            mask = (probs > 0.8).astype(np.uint8)
-
-            num, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
-            if num > 1:
-                largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-                mask = (labels == largest).astype(np.uint8)
+        if seg_frame == 0 and "_def_seg_mask" in st.session_state:
+            mask = st.session_state["_def_seg_mask"]
+            contour_data = st.session_state["_def_seg_contour"]
+            frame_rgb = st.session_state["_def_seg_frame_rgb"]
+        else:
+            frame_input = np.stack([frame.astype(np.float32)] * 3, axis=-1)
+            frame_input = normalize_image(frame_input)
+            frame_t = torch.from_numpy(frame_input).permute(2, 0, 1).unsqueeze(0).float().to(device)
+            with torch.no_grad():
+                logits = model_unet(frame_t)
+                probs = torch.sigmoid(logits).squeeze().cpu().numpy()
+                mask = (probs > 0.8).astype(np.uint8)
+                num, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
+                if num > 1:
+                    largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+                    mask = (labels == largest).astype(np.uint8)
+            contour_data = process_mask(mask, frame_rgb)
 
         st.markdown("<h3 style='text-align:center;'>U-Net Segmentation Results</h3>", unsafe_allow_html=True)
-        mask_resized = mask
-        contour_data = process_mask(mask_resized, frame_rgb)
 
         _, col3, _, col4, _, col5, _ = st.columns([0.5, 2, 0.5, 2, 0.5, 2, 0.5])
         with col3:
             st.image(frame_rgb, caption="Original Frame", channels="GRAY", width='stretch')
         with col4:
-            overlay_img = overlay_mask(frame_rgb, mask_resized)
+            overlay_img = overlay_mask(frame_rgb, mask)
             st.image(overlay_img, caption="Mask Overlay", width='stretch')
         with col5:
             if contour_data["overlay"] is not None:
