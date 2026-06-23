@@ -9,7 +9,7 @@ from src.config import (
     PROCESSED_DIR, FRAME_SIZE, FRAME_SIZE_SEG, N_FRAMES,
     SEG_BATCH_SIZE, REGRESSION_BATCH_SIZE, FILE_LIST,
 )
-from src.preprocessing.normalize import normalize_frames
+from src.preprocessing.normalize import normalize_frames, normalize_image
 
 
 class EchoVideoDataset(Dataset):
@@ -133,8 +133,9 @@ class EchoSegmentationDataset(Dataset):
 
         frame = frames[frame_n] if frame_n < len(frames) else frames[-1]
         frame = cv2.resize(frame, (self.frame_size, self.frame_size))
-        frame = frame.astype(np.float32) / 255.0
+        frame = frame.astype(np.float32)
         frame = np.stack([frame] * 3, axis=-1)
+        frame = normalize_image(frame)
 
         mask = cv2.resize(mask, (self.frame_size, self.frame_size), interpolation=cv2.INTER_NEAREST)
         mask = (mask > 0.5).astype(np.float32)

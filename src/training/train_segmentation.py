@@ -27,12 +27,35 @@ class DiceLoss(nn.Module):
         return 1.0 - dice.mean()
 
 
+class BoundaryLoss(nn.Module):
+    """Penalizes predictions that have high gradient outside ground-truth boundaries."""
+
+    def __init__(self, lambda_boundary: float = 0.1):
+        super().__init__()
+        self.lambda_boundary = lambda_boundary
+
+    def forward(self, pred_logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        pred = torch.sigmoid(pred_logits)
+
+        grad_x_pred = (pred[:, :, :, 1:] - pred[:, :, :, :-1]).abs()
+        grad_y_pred = (pred[:, :, 1:, :] - pred[:, :, :-1, :]).abs()
+
+        grad_x_gt = (target[:, :, :, 1:] - target[:, :, :, :-1]).abs()
+        grad_y_gt = (target[:, :, 1:, :] - target[:, :, :-1, :]).abs()
+
+        loss_x = (grad_x_pred * (1 - grad_x_gt)).mean()
+        loss_y = (grad_y_pred * (1 - grad_y_gt)).mean()
+
+        return self.lambda_boundary * (loss_x + loss_y)
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     bce: nn.Module,
     dice: DiceLoss,
+    boundary: BoundaryLoss,
     device: torch.device,
 ) -> float:
     model.train()
@@ -41,7 +64,11 @@ def train_one_epoch(
         images, masks = images.to(device), masks.to(device)
         optimizer.zero_grad()
         logits = model(images)
-        loss = 0.3 * bce(logits, masks) + 0.7 * dice(logits, masks)
+        loss = (
+            0.3 * bce(logits, masks)
+            + 0.7 * dice(logits, masks)
+            + boundary(logits, masks)
+        )
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * images.size(0)
@@ -91,6 +118,7 @@ def main(subset_size: int | None = None, file_list: str | None = None):
     ).to(device)
     bce = nn.BCEWithLogitsLoss()
     dice = DiceLoss()
+    boundary = BoundaryLoss(lambda_boundary=0.05)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=SEG_LR, weight_decay=SEG_WEIGHT_DECAY
     )
@@ -101,7 +129,7 @@ def main(subset_size: int | None = None, file_list: str | None = None):
 
     best_val = float("inf")
     for epoch in range(1, SEG_EPOCHS + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, bce, dice, device)
+        train_loss = train_one_epoch(model, train_loader, optimizer, bce, dice, boundary, device)
         if len(val_loader) > 0:
             val_loss = validate(model, val_loader, bce, dice, device)
         else:

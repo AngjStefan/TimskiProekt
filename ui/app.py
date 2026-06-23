@@ -14,7 +14,7 @@ from src.config import MODELS_DIR, FRAME_SIZE, FRAME_SIZE_SEG, DEVICE
 from src.models.regression import EchoResNet
 from src.models.segmentation import UNet
 from src.preprocessing.extract_frames import extract_single_video
-from src.preprocessing.normalize import normalize_frames
+from src.preprocessing.normalize import normalize_frames, normalize_image
 from src.postprocessing.contours import process_mask
 from src.visualization.overlay import overlay_mask
 from src.models.gemini3_analyzer import generate_image, generate_medical_opinion
@@ -106,8 +106,8 @@ if uploaded_file is not None:
         frames_gray[seg_frame],
         (FRAME_SIZE_SEG, FRAME_SIZE_SEG),)
     frame_rgb = np.stack([frame] * 3, axis=-1).astype(np.uint8)
-    frame_input = normalize_frames(frame)
-    frame_input = np.stack([frame_input] * 3, axis=-1)
+    frame_input = np.stack([frame.astype(np.float32)] * 3, axis=-1)
+    frame_input = normalize_image(frame_input)
     frame_t = torch.from_numpy(frame_input).permute(2, 0, 1).unsqueeze(0).float().to(device)
 
     try:
@@ -173,8 +173,10 @@ if uploaded_file is not None:
             st.json({
                 "centroid": [round(v, 1) for v in kp["centroid"]] if kp["centroid"] else None,
                 "apex": [round(v, 1) for v in kp["apex"]] if kp["apex"] else None,
-                "basal_left": [round(v, 1) for v in kp["basal_left"]] if kp["basal_left"] else None,
-                "basal_right": [round(v, 1) for v in kp["basal_right"]] if kp["basal_right"] else None,
+                "basal_septal": [round(v, 1) for v in kp["basal_septal"]] if kp["basal_septal"] else None,
+                "basal_lateral": [round(v, 1) for v in kp["basal_lateral"]] if kp["basal_lateral"] else None,
+                "mid_septal": [round(v, 1) for v in kp["mid_septal"]] if kp["mid_septal"] else None,
+                "mid_lateral": [round(v, 1) for v in kp["mid_lateral"]] if kp["mid_lateral"] else None,
             })
 
     except Exception as e:
