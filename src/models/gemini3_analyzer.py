@@ -1,22 +1,23 @@
+import os
 import time
 import cv2
 import io
 from PIL import Image
 
+from dotenv import load_dotenv
 # library for both - google-genai
 from google import genai
 from google.genai import types
 
-GEMINI_API_KEY = ""
+load_dotenv()
+
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 def generate_image(input_video_path: str, model_name: str) -> Image.Image:
     """
     Extracts the first frame from a video file, passes it to the specified Gemini image
     model with strict isolation guidelines, and returns a clean PIL Image object.
     """
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
-        raise ValueError("Gemini API Key is missing or not configured.")
-
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     cap = cv2.VideoCapture(input_video_path)
@@ -71,9 +72,6 @@ def generate_medical_opinion(video_path: str, model_name: str) -> str:
     Uploads the video to the chosen Gemini text/multimodal model for an evaluation
     anchored purely on clearly visible perspectives.
     """
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
-        raise ValueError("Gemini API Key is missing or not configured.")
-
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     try:

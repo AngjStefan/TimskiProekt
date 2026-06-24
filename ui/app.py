@@ -23,7 +23,7 @@ from src.postprocessing.contours import process_mask, get_lv_contour, get_key_po
 from src.visualization.overlay import overlay_mask
 from src.models.gemini3_analyzer import generate_image, generate_medical_opinion
 
-st.set_page_config(page_title="EchoNet-Dynamic Analysis", layout="wide")
+st.set_page_config(page_title="Echocardiogram Analysis with AI", layout="wide")
 
 st.markdown("""
 <style>
@@ -35,9 +35,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Echocardiogram Analysis — Model Comparison")
+st.title("Echocardiogram Analysis with AI")
 st.markdown(
-    "Upload an echocardiogram video and compare predictions from ResNet18, ResNet34, and U-Net."
+    "Upload an echocardiogram video to analyze ejection fraction, LV segmentation key points, and AI-powered clinical insights."
 )
 st.caption(
     "⚠️ **Demo mode**: models trained on a small subset of EchoNet-Dynamic "
@@ -156,7 +156,7 @@ def _create_gif(frames_rgb, fps_out=20, max_frames=60, loop=0, target_size=None)
     return path
 
 
-uploaded_file = st.file_uploader("Choose an AVI video", type=["avi", "mp4", "mpeg"])
+uploaded_file = st.file_uploader("Choose an echocardiogram video", type=["avi", "mp4", "mpeg"])
 
 if uploaded_file is not None:
     ext = Path(uploaded_file.name).suffix.lower()
@@ -429,16 +429,16 @@ if uploaded_file is not None:
         st.error(f"U-Net: {e}")
 
     # --- Google Gemini AI Section ---
-    st.header("Google Gemini AI Analysis")
+    st.header("AI-Powered Analysis (Gemini)")
     st.markdown(
-        "Use Google's generative multimodal APIs to compute semantic structural tracking and evaluate clinical presentations."
+        "Generate structural contour overlays and clinical assessments using Google's Gemini models."
     )
 
     model_tier = st.selectbox(
-        "Select Gemini Model Suite Configuration",
+        "Select Gemini Model",
         options=["Gemini 3 Flash", "Gemini 3 Pro"],
         index=0,
-        help="Toggle between high-speed performance (Flash) and heavy clinical reasoning capabilities (Pro).",
+        help="Gemini 3 Flash: faster results. Gemini 3 Pro: deeper clinical reasoning.",
     )
 
     if model_tier == "Gemini 3 Flash":
@@ -453,8 +453,8 @@ if uploaded_file is not None:
     if "gemini_opinion_text" not in st.session_state:
         st.session_state.gemini_opinion_text = None
 
-    if st.button("Run Comprehensive AI Analysis", type="primary"):
-        with st.spinner(f"Processing framework utilizing {model_tier}..."):
+    if st.button("Run AI Analysis", type="primary"):
+        with st.spinner(f"Analyzing with {model_tier}..."):
             try:
                 st.session_state.gemini_image = generate_image(tmp_path, model_name=target_image_model)
                 st.session_state.gemini_opinion_text = generate_medical_opinion(
@@ -472,7 +472,7 @@ if uploaded_file is not None:
                 st.subheader("Contour Overlay")
                 st.image(
                     st.session_state.gemini_image,
-                    caption=f"Generated Frame Contours ({model_tier}) \n Image may not be precise",
+                    caption=f"AI-generated structural overlay ({model_tier})",
                 )
                 buf = io.BytesIO()
                 st.session_state.gemini_image.save(buf, format="PNG")
@@ -499,13 +499,15 @@ if uploaded_file is not None:
     Path(tmp_path).unlink(missing_ok=True)
 
 else:
-    st.info("Upload an echocardiogram video to see predictions.")
+    st.info("Upload an echocardiogram video to start analysis.")
     st.markdown("""
     ### Models:
-    - **ResNet18**: EF regression (trained on 12 videos)
-    - **U-Net**: Left ventricle segmentation (trained on 12 videos)
+    - **ResNet18 / ResNet34**: Ejection fraction regression
+    - **U-Net**: Left ventricle segmentation with contour key points
+    - **Gemini 3 Flash / Pro**: AI-powered structural overlay & clinical assessment
 
-    ### Metrics:
-    - EF prediction: MAE, RMSE
-    - Segmentation: Dice coefficient, IoU
+    ### Features:
+    - EF prediction with HF classification (HFrEF / HFmrEF / HFpEF)
+    - LV segmentation with anatomical key points (apex, basal, mid)
+    - AI-generated structural overlays and clinical opinion
     """)
