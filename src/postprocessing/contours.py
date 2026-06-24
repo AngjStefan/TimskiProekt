@@ -3,26 +3,53 @@ import numpy as np
 
 
 def get_lv_contour(mask: np.ndarray, min_area: int = 50):
-    """Extract largest LV contour from binary mask."""
-    mask_bin = (mask > 0.3).astype(np.uint8) * 255
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    """Extract LV contour from binary mask with geometric constraints."""
+    mask_bin = (mask > 0.5).astype(np.uint8) * 255
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_CLOSE, kernel)
     mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_OPEN, kernel)
+
     contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
         return None, None
+
     h, w = mask.shape[:2]
+    cx_img, cy_img = w // 2, h // 2
     valid = []
+
     for c in contours:
         area = cv2.contourArea(c)
         if area < min_area:
             continue
-        touches_border = np.any(c[:, 0, 1] == 0) or np.any(c[:, 0, 1] == h - 1) or \
-                         np.any(c[:, 0, 0] == 0) or np.any(c[:, 0, 0] == w - 1)
+
+        touches_border = (
+            np.any(c[:, 0, 1] == 0) or np.any(c[:, 0, 1] == h - 1) or
+            np.any(c[:, 0, 0] == 0) or np.any(c[:, 0, 0] == w - 1)
+        )
         if touches_border:
             continue
+
+        M = cv2.moments(c)
+        if M["m00"] == 0:
+            continue
+        cx = M["m10"] / M["m00"]
+        cy = M["m01"] / M["m00"]
+
+        dist_from_center = np.sqrt((cx - cx_img) ** 2 + (cy - cy_img) ** 2)
+        if dist_from_center > w * 0.45:
+            continue
+
+        x, y, bw, bh = cv2.boundingRect(c)
+        aspect_ratio = bw / bh if bh > 0 else 0
+        if aspect_ratio < 0.3 or aspect_ratio > 3.0:
+            continue
+
         valid.append((c, area))
+
     if not valid:
         return None, None
+
     valid.sort(key=lambda x: x[1], reverse=True)
     return valid[0][0], valid[0][1]
 
@@ -38,34 +65,61 @@ def get_centroid(contour) -> tuple[float, float] | None:
 
 
 def get_key_points(contour) -> dict:
-    """Extract key points: apex (bottom-most), basal points (left/right top)."""
+    """Extract 5 key points: apex, basal septal, basal lateral, mid septal, mid lateral."""
     if contour is None:
-        return {"apex": None, "basal_left": None, "basal_right": None, "centroid": None}
+        return {
+            "apex": None,
+            "basal_septal": None,
+            "basal_lateral": None,
+            "mid_septal": None,
+            "mid_lateral": None,
+            "centroid": None,
+        }
 
     centroid = get_centroid(contour)
     pts = contour.squeeze(1)
     if pts.ndim != 2 or len(pts) < 3:
-        return {"apex": None, "basal_left": None, "basal_right": None, "centroid": centroid}
+        return {
+            "apex": None,
+            "basal_septal": None,
+            "basal_lateral": None,
+            "mid_septal": None,
+            "mid_lateral": None,
+            "centroid": centroid,
+        }
 
-    # Apex: bottom-most point (largest y)
     min_y, max_y = pts[:, 1].min(), pts[:, 1].max()
-    apex = tuple(pts[pts[:, 1].argmax()])
-
-    # Basal: top-most points (left and right)
     y_range = max_y - min_y
-    top_mask = pts[:, 1] < min_y + y_range * 0.2
-    top_pts = pts[top_mask]
-    if len(top_pts) > 1:
-        basal_left = tuple(top_pts[top_pts[:, 0].argmin()])
-        basal_right = tuple(top_pts[top_pts[:, 0].argmax()])
+
+    # Apex is the narrowest/pointiest part = smallest y = TOP of image
+    apex = tuple(pts[pts[:, 1].argmin()])
+
+    # Basal points are at the widest part = largest y = BOTTOM of image
+    bottom_mask = pts[:, 1] > max_y - y_range * 0.2
+    bottom_pts = pts[bottom_mask]
+    if len(bottom_pts) > 1:
+        basal_septal = tuple(bottom_pts[bottom_pts[:, 0].argmin()])
+        basal_lateral = tuple(bottom_pts[bottom_pts[:, 0].argmax()])
     else:
-        basal_left = tuple(pts[pts[:, 0].argmin()])
-        basal_right = tuple(pts[pts[:, 0].argmax()])
+        basal_septal = tuple(pts[pts[:, 0].argmin()])
+        basal_lateral = tuple(pts[pts[:, 0].argmax()])
+
+    # Mid points are in the middle y-range
+    mid_mask = (pts[:, 1] >= min_y + y_range * 0.4) & (pts[:, 1] <= min_y + y_range * 0.6)
+    mid_pts = pts[mid_mask]
+    if len(mid_pts) > 1:
+        mid_septal = tuple(mid_pts[mid_pts[:, 0].argmin()])
+        mid_lateral = tuple(mid_pts[mid_pts[:, 0].argmax()])
+    else:
+        mid_septal = basal_septal
+        mid_lateral = basal_lateral
 
     return {
         "apex": apex,
-        "basal_left": basal_left,
-        "basal_right": basal_right,
+        "basal_septal": basal_septal,
+        "basal_lateral": basal_lateral,
+        "mid_septal": mid_septal,
+        "mid_lateral": mid_lateral,
         "centroid": centroid,
     }
 
@@ -92,28 +146,43 @@ def draw_contour_and_points(
             if pt is None:
                 continue
             cx, cy = _clamp(int(pt[0]), int(pt[1]), h, w)
+
             if name == "apex":
                 cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
                 cv2.circle(overlay, (cx, cy), 6, (0, 0, 255), -1)
-                cv2.putText(overlay, "A", (cx + 8, cy - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-                cv2.putText(overlay, "A", (cx + 8, cy - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 1)
-            elif "basal" in name:
-                label = "BL" if "left" in name else "BR"
+                label, lcolor = "A", (0, 0, 255)
+            elif name == "basal_septal":
                 cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
                 cv2.circle(overlay, (cx, cy), 6, (255, 0, 0), -1)
-                cv2.putText(overlay, label, (cx + 8, cy - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                cv2.putText(overlay, label, (cx + 8, cy - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 1)
-            elif name == "centroid":
+                label, lcolor = "BS", (255, 0, 0)
+            elif name == "basal_lateral":
+                cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
+                cv2.circle(overlay, (cx, cy), 6, (255, 0, 0), -1)
+                label, lcolor = "BL", (255, 0, 0)
+            elif name == "mid_septal":
                 cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
                 cv2.circle(overlay, (cx, cy), 6, (0, 255, 255), -1)
-                cv2.putText(overlay, "C", (cx + 8, cy - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-                cv2.putText(overlay, "C", (cx + 8, cy - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 1)
+                label, lcolor = "MS", (0, 255, 255)
+            elif name == "mid_lateral":
+                cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
+                cv2.circle(overlay, (cx, cy), 6, (0, 255, 255), -1)
+                label, lcolor = "ML", (0, 255, 255)
+            elif name == "centroid":
+                cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
+                cv2.circle(overlay, (cx, cy), 6, (0, 200, 0), -1)
+                label, lcolor = "C", (0, 200, 0)
+            else:
+                continue
+
+            cv2.putText(
+                overlay, label, (cx + 8, cy - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2,
+            )
+            cv2.putText(
+                overlay, label, (cx + 8, cy - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, lcolor, 1,
+            )
+
     return overlay
 
 

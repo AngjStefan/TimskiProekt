@@ -38,6 +38,7 @@ pip install -e .
 
 ```bash
 uv run python run_pipeline.py
+uv run python run_pipeline.py --subset 500
 ```
 
 This will:

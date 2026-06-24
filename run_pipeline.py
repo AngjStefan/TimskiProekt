@@ -33,12 +33,45 @@ def find_zip() -> Path:
     )
 
 
-def get_subset_video_ids(zip_path: Path, n: int = SUBSET_SIZE) -> list[str]:
+# def get_subset_video_ids(zip_path: Path, n: int = SUBSET_SIZE) -> list[str]:
+#     z = zipfile.ZipFile(str(zip_path), "r")
+#     videos = sorted(v for v in z.namelist() if v.endswith(".avi"))[:n]
+#     z.close()
+#     ids = [Path(v).stem for v in videos]
+#     print(f"Using {len(ids)} videos for demo: {ids[:3]} ... {ids[-1]}")
+#     return ids
+def get_subset_video_ids(zip_path: Path, n: int):
+    import pandas as pd
+    import io
+
     z = zipfile.ZipFile(str(zip_path), "r")
-    videos = sorted(v for v in z.namelist() if v.endswith(".avi"))[:n]
+
+    filelist_entry = next(
+        x for x in z.namelist()
+        if x.endswith("FileList.csv")
+    )
+
+    df = pd.read_csv(io.BytesIO(z.read(filelist_entry)))
+
+    subset = df.iloc[:n].copy()
+
+    ids = (
+        subset["FileName"]
+        .astype(str)
+        .str.replace(".avi", "", regex=False)
+        .tolist()
+    )
+
     z.close()
-    ids = [Path(v).stem for v in videos]
-    print(f"Using {len(ids)} videos for demo: {ids[:3]} ... {ids[-1]}")
+
+    print(f"\nSelected first {len(ids)} videos")
+
+    print(
+        subset["Split"]
+        .value_counts()
+        .to_dict()
+    )
+
     return ids
 
 
@@ -50,21 +83,57 @@ def step_extract(zip_path: Path, video_ids: list[str]):
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    preprocess_all(zip_path, dest, max_videos=len(video_ids))
+    preprocess_all(zip_path, dest, video_ids=video_ids)
 
 
-def create_subset_filelist(zip_path: Path, video_ids: list[str]):
+# def create_subset_filelist(zip_path: Path, video_ids: list[str]):
+#     import pandas as pd
+#     import io
+#     z = zipfile.ZipFile(str(zip_path), "r")
+#     entry = next(n for n in z.namelist() if n.endswith("FileList.csv"))
+#     df = pd.read_csv(io.BytesIO(z.read(entry)))
+#     z.close()
+#     df = df[df["FileName"].isin(video_ids)].copy()
+#     df["Split"] = "TRAIN"
+#     df.to_csv(SUBSET_FILE_LIST, index=False)
+#     print(f"Created subset filelist: {len(df)} videos → {SUBSET_FILE_LIST}")
+def create_subset_filelist(zip_path, video_ids):
     import pandas as pd
     import io
-    z = zipfile.ZipFile(str(zip_path), "r")
-    entry = next(n for n in z.namelist() if n.endswith("FileList.csv"))
-    df = pd.read_csv(io.BytesIO(z.read(entry)))
-    z.close()
-    df = df[df["FileName"].isin(video_ids)].copy()
-    df["Split"] = "TRAIN"
-    df.to_csv(SUBSET_FILE_LIST, index=False)
-    print(f"Created subset filelist: {len(df)} videos → {SUBSET_FILE_LIST}")
 
+    z = zipfile.ZipFile(str(zip_path))
+
+    entry = next(
+        x for x in z.namelist()
+        if x.endswith("FileList.csv")
+    )
+
+    df = pd.read_csv(
+        io.BytesIO(z.read(entry))
+    )
+
+    z.close()
+
+    subset = df[
+        df["FileName"]
+        .astype(str)
+        .str.replace(".avi", "", regex=False)
+        .isin(video_ids)
+    ].copy()
+
+    subset.to_csv(
+        SUBSET_FILE_LIST,
+        index=False,
+    )
+
+    print(
+        "\nSaved split distribution:"
+    )
+
+    print(
+        subset["Split"]
+        .value_counts()
+    )
 
 def step_masks(zip_path: Path, video_ids: list[str]):
     print("\n" + "=" * 50)
@@ -119,8 +188,8 @@ def step_train_segmentation(subset_size: int):
 
 def main():
     parser = argparse.ArgumentParser(description="EchoNet-Dynamic Demo Pipeline")
-    parser.add_argument("--subset", type=int, default=SUBSET_SIZE,
-                        help=f"Number of videos to use (default: {SUBSET_SIZE})")
+    parser.add_argument("--subset", type=int, default=None,
+                        help=f"Number of videos to use (default: {None})")
     parser.add_argument("--skip-train", action="store_true",
                         help="Skip training if models already exist")
     args = parser.parse_args()
@@ -128,7 +197,10 @@ def main():
     zip_path = find_zip()
     print(f"Found zip: {zip_path}")
 
-    video_ids = get_subset_video_ids(zip_path, args.subset)
+    video_ids = get_subset_video_ids(
+        zip_path,
+        args.subset or SUBSET_SIZE
+    )
 
     step_extract(zip_path, video_ids)
     create_subset_filelist(zip_path, video_ids)
