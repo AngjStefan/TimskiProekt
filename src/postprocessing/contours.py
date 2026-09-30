@@ -1,6 +1,10 @@
 import cv2
 import numpy as np
 
+from src.postprocessing.measurements import (
+    N_DISKS, lv_landmarks, measure_mask, method_of_disks, region_from_contour,
+)
+
 
 def get_lv_contour(mask: np.ndarray, min_area: int = 50):
     """Extract LV contour from binary mask with geometric constraints."""
@@ -64,68 +68,48 @@ def get_centroid(contour) -> tuple[float, float] | None:
     return M["m10"] / M["m00"], M["m01"] / M["m00"]
 
 
-def get_key_points(contour) -> dict:
-    """Extract 5 key points: apex, basal septal, basal lateral, mid septal, mid lateral."""
+KEYPOINT_NAMES = ("apex", "basal_septal", "basal_lateral", "mid_septal", "mid_lateral")
+
+
+def get_key_points(contour, measurement: dict | None = None) -> dict:
+    """Apex, mitral annulus hinges (basal septal/lateral) and mid-cavity walls.
+
+    Derived from the LV long axis (see src/postprocessing/measurements.py): the
+    apex and annulus come from the major axis of the region, and the mid points
+    are the ends of the middle disk chord. `centroid` and `base_mid` (annulus
+    midpoint) are included for drawing and measurements.
+    """
+    empty = {name: None for name in (*KEYPOINT_NAMES, "base_mid")}
+    empty["centroid"] = get_centroid(contour)
     if contour is None:
-        return {
-            "apex": None,
-            "basal_septal": None,
-            "basal_lateral": None,
-            "mid_septal": None,
-            "mid_lateral": None,
-            "centroid": None,
-        }
+        return empty
+    if measurement is None:
+        region = region_from_contour(contour)
+        lm = lv_landmarks(contour, region)
+        if lm is None:
+            return empty
+        disks = method_of_disks(region, lm["apex"], lm["base_mid"])
+        if disks is None:
+            return empty
+        mid_septal, mid_lateral = sorted(disks["chords"][N_DISKS // 2], key=lambda p: p[0])
+        measurement = {**lm, "mid_septal": mid_septal, "mid_lateral": mid_lateral}
 
-    centroid = get_centroid(contour)
-    pts = contour.squeeze(1)
-    if pts.ndim != 2 or len(pts) < 3:
-        return {
-            "apex": None,
-            "basal_septal": None,
-            "basal_lateral": None,
-            "mid_septal": None,
-            "mid_lateral": None,
-            "centroid": centroid,
-        }
-
-    min_y, max_y = pts[:, 1].min(), pts[:, 1].max()
-    y_range = max_y - min_y
-
-    # Apex is the narrowest/pointiest part = smallest y = TOP of image
-    apex = tuple(pts[pts[:, 1].argmin()])
-
-    # Basal points are at the widest part = largest y = BOTTOM of image
-    bottom_mask = pts[:, 1] > max_y - y_range * 0.2
-    bottom_pts = pts[bottom_mask]
-    if len(bottom_pts) > 1:
-        basal_septal = tuple(bottom_pts[bottom_pts[:, 0].argmin()])
-        basal_lateral = tuple(bottom_pts[bottom_pts[:, 0].argmax()])
-    else:
-        basal_septal = tuple(pts[pts[:, 0].argmin()])
-        basal_lateral = tuple(pts[pts[:, 0].argmax()])
-
-    # Mid points are in the middle y-range
-    mid_mask = (pts[:, 1] >= min_y + y_range * 0.4) & (pts[:, 1] <= min_y + y_range * 0.6)
-    mid_pts = pts[mid_mask]
-    if len(mid_pts) > 1:
-        mid_septal = tuple(mid_pts[mid_pts[:, 0].argmin()])
-        mid_lateral = tuple(mid_pts[mid_pts[:, 0].argmax()])
-    else:
-        mid_septal = basal_septal
-        mid_lateral = basal_lateral
-
-    return {
-        "apex": apex,
-        "basal_septal": basal_septal,
-        "basal_lateral": basal_lateral,
-        "mid_septal": mid_septal,
-        "mid_lateral": mid_lateral,
-        "centroid": centroid,
-    }
+    out = {name: tuple(float(v) for v in measurement[name]) for name in (*KEYPOINT_NAMES, "base_mid")}
+    out["centroid"] = empty["centroid"]
+    return out
 
 
 def _clamp(cx: int, cy: int, h: int, w: int):
     return max(0, min(w - 1, cx)), max(0, min(h - 1, cy))
+
+
+_POINT_STYLE = {
+    "apex": ("A", (255, 60, 60)),
+    "basal_septal": ("BS", (70, 140, 255)),
+    "basal_lateral": ("BL", (70, 140, 255)),
+    "mid_septal": ("MS", (255, 220, 0)),
+    "mid_lateral": ("ML", (255, 220, 0)),
+}
 
 
 def draw_contour_and_points(
@@ -133,67 +117,70 @@ def draw_contour_and_points(
     contour,
     keypoints: dict | None = None,
     color: tuple = (0, 255, 0),
-    thickness: int = 2,
+    thickness: int = 1,
+    chords: list | None = None,
 ) -> np.ndarray:
-    """Draw contour and key points on image. Image is (H,W,3) uint8."""
+    """Draw contour, long axis, disk chords and landmarks on an (H,W,3) uint8 image."""
     overlay = image.copy()
     h, w = overlay.shape[:2]
     if contour is not None:
-        cv2.drawContours(overlay, [contour], -1, color, thickness)
+        cv2.drawContours(overlay, [contour], -1, color, thickness, lineType=cv2.LINE_AA)
 
-    if keypoints:
-        for name, pt in keypoints.items():
-            if pt is None:
-                continue
-            cx, cy = _clamp(int(pt[0]), int(pt[1]), h, w)
+    def ip(pt):
+        return _clamp(int(round(pt[0])), int(round(pt[1])), h, w)
 
-            if name == "apex":
-                cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
-                cv2.circle(overlay, (cx, cy), 6, (0, 0, 255), -1)
-                label, lcolor = "A", (0, 0, 255)
-            elif name == "basal_septal":
-                cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
-                cv2.circle(overlay, (cx, cy), 6, (255, 0, 0), -1)
-                label, lcolor = "BS", (255, 0, 0)
-            elif name == "basal_lateral":
-                cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
-                cv2.circle(overlay, (cx, cy), 6, (255, 0, 0), -1)
-                label, lcolor = "BL", (255, 0, 0)
-            elif name == "mid_septal":
-                cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
-                cv2.circle(overlay, (cx, cy), 6, (0, 255, 255), -1)
-                label, lcolor = "MS", (0, 255, 255)
-            elif name == "mid_lateral":
-                cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
-                cv2.circle(overlay, (cx, cy), 6, (0, 255, 255), -1)
-                label, lcolor = "ML", (0, 255, 255)
-            elif name == "centroid":
-                cv2.circle(overlay, (cx, cy), 6, (255, 255, 255), 2)
-                cv2.circle(overlay, (cx, cy), 6, (0, 200, 0), -1)
-                label, lcolor = "C", (0, 200, 0)
-            else:
-                continue
+    if chords:
+        layer = overlay.copy()
+        for p1, p2 in chords:
+            cv2.line(layer, ip(p1), ip(p2), (0, 200, 255), 1, lineType=cv2.LINE_AA)
+        overlay = cv2.addWeighted(layer, 0.55, overlay, 0.45, 0)
 
-            cv2.putText(
-                overlay, label, (cx + 8, cy - 6),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2,
-            )
-            cv2.putText(
-                overlay, label, (cx + 8, cy - 6),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, lcolor, 1,
-            )
+    if keypoints and keypoints.get("apex") is not None and keypoints.get("base_mid") is not None:
+        cv2.line(overlay, ip(keypoints["apex"]), ip(keypoints["base_mid"]), (255, 255, 255), 1, lineType=cv2.LINE_AA)
+        if keypoints.get("basal_septal") is not None and keypoints.get("basal_lateral") is not None:
+            cv2.line(overlay, ip(keypoints["basal_septal"]), ip(keypoints["basal_lateral"]),
+                     (70, 140, 255), 1, lineType=cv2.LINE_AA)
+
+    for name, (label, lcolor) in _POINT_STYLE.items():
+        pt = (keypoints or {}).get(name)
+        if pt is None:
+            continue
+        c = ip(pt)
+        cv2.circle(overlay, c, 3, (255, 255, 255), -1, lineType=cv2.LINE_AA)
+        cv2.circle(overlay, c, 2, lcolor, -1, lineType=cv2.LINE_AA)
+        # labels outside the cavity: septal to the left, lateral right, apex above
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.32, 1)
+        if name.endswith("septal"):
+            org = (c[0] - tw - 5, c[1] + th // 2)
+        elif name.endswith("lateral"):
+            org = (c[0] + 5, c[1] + th // 2)
+        else:
+            org = (c[0] - tw // 2, c[1] - 6)
+        cv2.putText(overlay, label, org, cv2.FONT_HERSHEY_SIMPLEX, 0.32,
+                    (0, 0, 0), 2, lineType=cv2.LINE_AA)
+        cv2.putText(overlay, label, org, cv2.FONT_HERSHEY_SIMPLEX, 0.32,
+                    lcolor, 1, lineType=cv2.LINE_AA)
 
     return overlay
 
 
 def process_mask(mask: np.ndarray, image: np.ndarray) -> dict:
-    """Full pipeline: mask → contour → keypoints → overlay image."""
+    """Full pipeline: mask → contour → landmarks + method of disks → overlay image.
+
+    `measurement` holds area (px, from the filled contour), long-axis length,
+    disk diameters and volume, all in the mask's pixel grid.
+    """
     contour, area = get_lv_contour(mask)
-    keypoints = get_key_points(contour)
-    overlay = draw_contour_and_points(image, contour, keypoints)
+    measurement = measure_mask(mask, contour) if contour is not None else None
+    keypoints = get_key_points(contour, measurement)
+    overlay = draw_contour_and_points(
+        image, contour, keypoints,
+        chords=measurement["chords"] if measurement else None,
+    )
     return {
         "contour": contour,
         "area_px": area,
         "keypoints": keypoints,
+        "measurement": measurement,
         "overlay": overlay,
     }

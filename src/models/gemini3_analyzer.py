@@ -11,14 +11,19 @@ from google.genai import types
 
 load_dotenv()
 
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+def _client() -> genai.Client:
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY is not set. Add it to .env (see .env.example).")
+    return genai.Client(api_key=key)
+
 
 def generate_image(input_video_path: str, model_name: str) -> Image.Image:
     """
     Extracts the first frame from a video file, passes it to the specified Gemini image
     model with strict isolation guidelines, and returns a clean PIL Image object.
     """
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = _client()
 
     cap = cv2.VideoCapture(input_video_path)
     ret, frame = cap.read()
@@ -72,7 +77,7 @@ def generate_medical_opinion(video_path: str, model_name: str) -> str:
     Uploads the video to the chosen Gemini text/multimodal model for an evaluation
     anchored purely on clearly visible perspectives.
     """
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = _client()
 
     try:
         video_file = client.files.upload(file=video_path)

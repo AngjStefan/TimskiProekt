@@ -36,6 +36,12 @@ SEG_BATCH_SIZE = 16
 SEG_EPOCHS = 50
 SEG_PATIENCE = 12
 SEG_N_CLASSES = 1
+# Sigmoid cut-off used by the app and evaluation. 0.5 beat 0.8 on 30 VAL
+# videos (Dice 0.855 vs 0.836, ED area bias -4% vs -13%); 0.8 under-segments.
+SEG_THRESHOLD = 0.5
+
+# EchoNet-Dynamic videos are 112x112; measurements are reported in this grid
+NATIVE_SIZE = 112
 
 # paths
 RAW_VIDEOS = RAW_DIR / "videos"
@@ -44,8 +50,21 @@ VOLUME_TRACINGS = RAW_DIR / "VolumeTracings.csv"
 ZIP_PATH = ROOT / "EchoNet-Dynamic.zip"
 SUBSET_FILE_LIST = PROCESSED_DIR / "filelist_subset.csv"
 
-# device
-DEVICE = "cuda"
+# device: CUDA (Linux/Windows GPU) -> Apple MPS -> CPU
+def get_device():
+    import torch
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+# Regression trains on B x N_FRAMES images per step; 16 x 48 doesn't fit in
+# 16 GB of Apple unified memory, so MPS/CPU use a smaller default batch.
+def default_regression_batch_size(device) -> int:
+    return REGRESSION_BATCH_SIZE if device.type == "cuda" else 2
+
 
 # split seed
 SEED = 42

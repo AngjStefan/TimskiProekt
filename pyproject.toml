@@ -18,9 +18,10 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
+# CUDA wheels on Linux/Windows; macOS falls back to PyPI (CPU + Apple MPS).
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
+torch = [{ index = "pytorch-cu128", marker = "sys_platform != 'darwin'" }]
+torchvision = [{ index = "pytorch-cu128", marker = "sys_platform != 'darwin'" }]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

@@ -165,7 +165,7 @@ def step_masks(zip_path: Path, video_ids: list[str]):
         print("VolumeTracings.csv not found in zip, skipping masks")
 
 
-def step_train_regression(backbone: str, subset_size: int):
+def step_train_regression(backbone: str, subset_size: int, batch_size: int | None = None):
     print(f"\n" + "=" * 50)
     print(f"Step 3: Train {backbone} (subset={subset_size})")
     print("=" * 50)
@@ -173,7 +173,7 @@ def step_train_regression(backbone: str, subset_size: int):
     ckpt.unlink(missing_ok=True)
     from src.training.train_regression import main as train_reg
     train_reg(backbone=backbone, subset_size=subset_size,
-              file_list=str(SUBSET_FILE_LIST))
+              file_list=str(SUBSET_FILE_LIST), batch_size=batch_size)
 
 
 def step_train_segmentation(subset_size: int):
@@ -192,6 +192,8 @@ def main():
                         help=f"Number of videos to use (default: {None})")
     parser.add_argument("--skip-train", action="store_true",
                         help="Skip training if models already exist")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Regression batch size (default: 16 on CUDA, 2 on MPS/CPU)")
     args = parser.parse_args()
 
     zip_path = find_zip()
@@ -207,7 +209,7 @@ def main():
     step_masks(zip_path, video_ids)
 
     if not args.skip_train:
-        step_train_regression("resnet18", args.subset)
+        step_train_regression("resnet18", args.subset, args.batch_size)
         step_train_segmentation(args.subset)
     else:
         print("\nSkipping training (--skip-train)")
