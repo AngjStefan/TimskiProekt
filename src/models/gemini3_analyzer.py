@@ -65,9 +65,7 @@ def generate_image(input_video_path: str, model_name: str) -> Image.Image:
 
     for part in response.parts:
         if part.inline_data and part.inline_data.data:
-            clean_image = Image.open(io.BytesIO(part.inline_data.data))
-            clean_image.save("debug_gemini_output.png")
-            return clean_image
+            return Image.open(io.BytesIO(part.inline_data.data))
 
     return None
 
