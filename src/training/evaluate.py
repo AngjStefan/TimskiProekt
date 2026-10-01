@@ -6,7 +6,7 @@ from pathlib import Path
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 
-from src.config import MODELS_DIR, REGRESSION_BACKBONE, DEVICE, PROCESSED_DIR, FILE_LIST
+from src.config import MODELS_DIR, REGRESSION_BACKBONE, get_device, PROCESSED_DIR, FILE_LIST
 from src.models.regression import EchoResNet
 from src.models.segmentation import UNet
 from src.preprocessing.dataset import EchoVideoDataset, EchoSegmentationDataset
@@ -67,7 +67,7 @@ def print_comparison_table(results: dict):
 
 
 def main():
-    device = torch.device(DEVICE if torch.cuda.is_available() else "cpu")
+    device = get_device()
     results = {}
 
     # ---- Regression models ----
@@ -79,7 +79,7 @@ def main():
             model.load_state_dict(torch.load(ckpt, map_location=device))
         else:
             print(f"  Checkpoint {ckpt} not found, using untrained model")
-        _, test_loader, _ = get_loaders_for_eval(backbone)
+        _, _, test_loader = get_loaders_for_eval(backbone)
         metrics, _, _ = evaluate_regression(model, test_loader, device)
         results[backbone] = metrics
 

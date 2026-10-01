@@ -11,6 +11,10 @@ from src.config import (
 )
 from src.preprocessing.normalize import normalize_frames, normalize_image
 
+# pin_memory only helps CUDA; persistent workers avoid re-spawning worker
+# processes every epoch (slow on macOS, which uses spawn).
+_LOADER_KW = dict(num_workers=2, pin_memory=torch.cuda.is_available(), persistent_workers=True)
+
 
 class EchoVideoDataset(Dataset):
     """Regression dataset: video → EF (& optionally ESV, EDV)."""
@@ -128,10 +132,10 @@ class EchoSegmentationDataset(Dataset):
     def __getitem__(self, idx: int):
         vid, frame_n = self.samples[idx]
 
-        frames = np.load(str(self.frames_dir / f"{vid}.npy"))
+        frames = np.load(str(self.frames_dir / f"{vid}.npy"), mmap_mode="r")
         mask = np.load(str(self.masks_dir / f"{vid}_frame{frame_n}.npy"))
 
-        frame = frames[frame_n] if frame_n < len(frames) else frames[-1]
+        frame = np.array(frames[frame_n] if frame_n < len(frames) else frames[-1])
         frame = cv2.resize(frame, (self.frame_size, self.frame_size))
         frame = frame.astype(np.float32)
         frame = np.stack([frame] * 3, axis=-1)
@@ -160,9 +164,9 @@ def get_regression_loaders(
                                subset_size=subset_size if subset_size else None,
                                file_list=file_list)
     return (
-        DataLoader(train_ds, batch_size, shuffle=True, num_workers=2, pin_memory=True),
-        DataLoader(val_ds, batch_size, shuffle=False, num_workers=2, pin_memory=True),
-        DataLoader(test_ds, batch_size, shuffle=False, num_workers=2, pin_memory=True),
+        DataLoader(train_ds, batch_size, shuffle=True, **_LOADER_KW),
+        DataLoader(val_ds, batch_size, shuffle=False, **_LOADER_KW),
+        DataLoader(test_ds, batch_size, shuffle=False, **_LOADER_KW),
     )
 
 
@@ -180,7 +184,7 @@ def get_segmentation_loaders(
                                       subset_size=subset_size if subset_size else None,
                                       file_list=file_list)
     return (
-        DataLoader(train_ds, batch_size, shuffle=True, num_workers=2, pin_memory=True),
-        DataLoader(val_ds, batch_size, shuffle=False, num_workers=2, pin_memory=True),
-        DataLoader(test_ds, batch_size, shuffle=False, num_workers=2, pin_memory=True),
+        DataLoader(train_ds, batch_size, shuffle=True, **_LOADER_KW),
+        DataLoader(val_ds, batch_size, shuffle=False, **_LOADER_KW),
+        DataLoader(test_ds, batch_size, shuffle=False, **_LOADER_KW),
     )

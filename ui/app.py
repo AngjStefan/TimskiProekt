@@ -7,19 +7,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 import numpy as np
-import torch
 import cv2
 import tempfile
 import os
+import zipfile
+import plotly.graph_objects as go
 
 from PIL import Image
 
-from src.config import MODELS_DIR, FRAME_SIZE, FRAME_SIZE_SEG, DEVICE
-from src.models.regression import EchoResNet
-from src.models.segmentation import UNet
+from src.config import (
+    ROOT, ZIP_PATH, MODELS_DIR, FRAME_SIZE_SEG, NATIVE_SIZE, get_device,
+)
+from src.models import inference
 from src.preprocessing.extract_frames import extract_single_video
-from src.preprocessing.normalize import normalize_frames, normalize_image
-from src.postprocessing.contours import process_mask, get_lv_contour, get_key_points, draw_contour_and_points
+from src.postprocessing.contours import process_mask
+from src.postprocessing.measurements import measure_mask, ef_from_volume_curve, gt_from_tracing, dice
 from src.visualization.overlay import overlay_mask
 from src.models.gemini3_analyzer import generate_image, generate_medical_opinion
 
@@ -44,55 +46,59 @@ st.caption(
     "for demonstration purposes only. Not for clinical use."
 )
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = get_device()
+S = FRAME_SIZE_SEG / NATIVE_SIZE   # analysis grid (224) -> EchoNet pixels (112)
 
 
 @st.cache_resource
 def load_regression(backbone: str):
-    model = EchoResNet(backbone=backbone).to(device)
-    ckpt = MODELS_DIR / f"{backbone}_ef.pth"
-    if ckpt.exists():
-        model.load_state_dict(torch.load(ckpt, map_location=device))
-    model.eval()
-    return model
+    return inference.load_regression(device, backbone)
 
 
 @st.cache_resource
 def load_unet():
-    model = UNet().to(device)
-    ckpt = MODELS_DIR / "unet_lv.pth"
-    if ckpt.exists():
-        model.load_state_dict(torch.load(ckpt, map_location=device))
-    model.eval()
-    return model
+    return inference.load_unet(device)
 
 
-def process_frame_with_unet(frame_gray, model_unet, device):
-    """Process a single grayscale frame through U-Net and return overlay with contours."""
-    frame = cv2.resize(frame_gray, (FRAME_SIZE_SEG, FRAME_SIZE_SEG))
-    frame_3c = np.stack([frame.astype(np.float32)] * 3, axis=-1)
-    frame_norm = normalize_image(frame_3c.copy())
-    frame_t = torch.from_numpy(frame_norm).permute(2, 0, 1).unsqueeze(0).float().to(device)
+@st.cache_resource
+def load_expert_labels():
+    """EchoNet FileList + VolumeTracings from the dataset zip, if present."""
+    from src.training.evaluate_test_set import load_labels
+    zip_path = next((p for p in (ZIP_PATH, ROOT / "data" / "raw" / "EchoNet-Dynamic.zip") if p.exists()), None)
+    if zip_path is None:
+        return None
+    with zipfile.ZipFile(zip_path) as z:
+        filelist, tracings, _ = load_labels(z)
+    return filelist, tracings
 
-    with torch.no_grad():
-        logits = model_unet(frame_t)
-        probs = torch.sigmoid(logits).squeeze().cpu().numpy()
-        mask = (probs > 0.8).astype(np.uint8)
 
-        num, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
-        if num > 1:
-            largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-            mask = (labels == largest).astype(np.uint8)
+def expert_for_upload(filename: str, n_frames: int):
+    """Expert EF and ED/ES tracings when the upload is an EchoNet-Dynamic video."""
+    labels = load_expert_labels()
+    if labels is None:
+        return None
+    from src.training.evaluate_test_set import expert_frames
+    filelist, tracings = labels
+    stem = Path(filename).stem
+    row = filelist[filelist["stem"] == stem]
+    if row.empty:
+        return None
+    row = row.iloc[0]
+    frames = expert_frames(tracings, stem, n_frames) or {}
+    gts = {f: gt_from_tracing(r, scale=S, shape=(FRAME_SIZE_SEG, FRAME_SIZE_SEG)) for f, r in frames.items()}
+    phases = {}
+    if len(gts) == 2:
+        ed, es = sorted(gts, key=lambda f: gts[f]["volume"], reverse=True)
+        phases = {ed: "ED", es: "ES"}
+    return {"ef": float(row["EF"]), "split": row["Split"], "gt": gts, "phase": phases}
 
-    frame_rgb = np.stack([frame] * 3, axis=-1).astype(np.uint8)
 
-    overlay = overlay_mask(frame_rgb, mask, color=(0, 255, 0), alpha=0.4)
-
-    contour, area = get_lv_contour(mask)
-    keypoints = get_key_points(contour)
-    overlay = draw_contour_and_points(overlay, contour, keypoints)
-
-    return overlay  # (H, W, 3) uint8
+def render_overlay(frame_gray: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Mask tint + contour, long axis, disks and landmarks for one frame."""
+    frame_rgb = np.stack([frame_gray] * 3, axis=-1).astype(np.uint8)
+    tinted = overlay_mask(frame_rgb, mask, color=(0, 255, 0), alpha=0.25)
+    data = process_mask(mask, tinted)
+    return data["overlay"], data
 
 
 def get_ef_classification(ef: float) -> dict:
@@ -165,17 +171,17 @@ if uploaded_file is not None:
         tmp_path = tmp.name
 
     with st.spinner("Extracting frames ..."):
-        frames = extract_single_video(tmp_path, target_size=FRAME_SIZE)
-        frames_gray = frames  # (T, H, W)
-
+        frames_gray = extract_single_video(tmp_path, target_size=FRAME_SIZE_SEG)  # (T, H, W)
     T = frames_gray.shape[0]
-    idxs = np.linspace(0, T - 1, 32, dtype=int)
-    sampled = frames_gray[idxs]
-    sampled = normalize_frames(sampled)
-    sampled = np.stack([sampled, sampled, sampled], axis=-1)
-    video_t = torch.from_numpy(sampled).permute(0, 3, 1, 2).unsqueeze(0).float().to(device)
 
-    model_unet = load_unet()
+    model_unet, unet_loaded = load_unet()
+    model18, reg_loaded = load_regression("resnet18")
+    missing = [n for n, ok in (("unet_lv.pth", unet_loaded), ("resnet18_ef.pth", reg_loaded)) if not ok]
+    if missing:
+        st.warning(
+            f"Checkpoint(s) not found in `{MODELS_DIR.name}/`: {', '.join(missing)}. "
+            "Results below come from **untrained** weights. Train first: `uv run python run_pipeline.py`."
+        )
 
     original_gif_path = None
     processed_gif_path = None
@@ -186,16 +192,6 @@ if uploaded_file is not None:
     need_processing = st.session_state.get("_upload_id") != upload_id
 
     with st.spinner("Loading analysis ..."):
-        # --- EF Prediction ---
-        try:
-            model18 = load_regression("resnet18")
-            with torch.no_grad():
-                ef_val = model18(video_t).item()
-                ef_val = max(0.0, min(1.0, ef_val))
-                ef_predicted = ef_val * 100
-        except Exception as e:
-            st.error(f"ResNet18: {e}")
-
         # --- Clean up old files from previous upload ---
         if need_processing:
             st.session_state._upload_id = upload_id
@@ -207,23 +203,46 @@ if uploaded_file is not None:
                     except Exception:
                         pass
                     st.session_state[old_key] = None
+            for key in ["_masks", "_areas", "_volumes", "_ef_seg", "_ef_resnet"]:
+                st.session_state.pop(key, None)
 
-        # --- Process all frames through U-Net (cached per file) ---
+        # --- EF prediction (regression) ---
+        if "_ef_resnet" not in st.session_state:
+            try:
+                st.session_state["_ef_resnet"] = inference.predict_ef(model18, frames_gray, device)
+            except Exception as e:
+                st.error(f"ResNet18: {e}")
+                st.session_state["_ef_resnet"] = None
+        ef_predicted = st.session_state["_ef_resnet"]
+
+        # --- U-Net on every frame + measurements (cached per upload) ---
+        if "_masks" not in st.session_state:
+            try:
+                masks, _ = inference.segment_frames(model_unet, frames_gray, device)
+                meas = [measure_mask(m) if m.any() else None for m in masks]
+                st.session_state["_masks"] = masks
+                st.session_state["_areas"] = np.array([m["area"] / S**2 if m else np.nan for m in meas])
+                st.session_state["_volumes"] = np.array([m["volume"] / S**3 if m else np.nan for m in meas])
+                cap = cv2.VideoCapture(tmp_path)
+                fps = cap.get(cv2.CAP_PROP_FPS) or None
+                cap.release()
+                st.session_state["_ef_seg"] = ef_from_volume_curve(st.session_state["_volumes"], fps=fps)
+            except Exception as e:
+                st.error(f"U-Net segmentation: {e}")
+        masks = st.session_state.get("_masks")
+        areas = st.session_state.get("_areas")
+        ef_seg = st.session_state.get("_ef_seg")
+
+        # --- GIFs / MP4 of the overlay (cached per upload) ---
         cached_path = st.session_state.get("_orig_gif")
         if cached_path and os.path.exists(cached_path):
             original_gif_path = cached_path
             processed_gif_path = st.session_state["_proc_gif"]
             processed_video_path = st.session_state.get("_proc_mp4")
-        else:
+        elif masks is not None:
             try:
-                original_rgb = []
-                processed_frames = []
-                for i in range(T):
-                    frame_gray_i = cv2.resize(frames_gray[i], (FRAME_SIZE_SEG, FRAME_SIZE_SEG))
-                    frame_rgb_i = np.stack([frame_gray_i] * 3, axis=-1).astype(np.uint8)
-                    original_rgb.append(frame_rgb_i)
-                    overlay = process_frame_with_unet(frame_gray_i, model_unet, device)
-                    processed_frames.append(overlay)
+                original_rgb = [np.stack([f] * 3, axis=-1).astype(np.uint8) for f in frames_gray]
+                processed_frames = [render_overlay(f, m)[0] for f, m in zip(frames_gray, masks)]
 
                 original_gif_path = _create_gif(original_rgb)
                 processed_gif_path = _create_gif(processed_frames)
@@ -249,27 +268,11 @@ if uploaded_file is not None:
             except Exception as e:
                 st.error(f"U-Net video processing: {e}")
 
-        # --- Pre-compute default frame (frame 0) segmentation for instant display ---
         try:
-            seg_frame_0 = cv2.resize(frames_gray[0], (FRAME_SIZE_SEG, FRAME_SIZE_SEG))
-            frame_rgb_0 = np.stack([seg_frame_0] * 3, axis=-1).astype(np.uint8)
-            frame_input_0 = np.stack([seg_frame_0.astype(np.float32)] * 3, axis=-1)
-            frame_input_0 = normalize_image(frame_input_0)
-            frame_t_0 = torch.from_numpy(frame_input_0).permute(2, 0, 1).unsqueeze(0).float().to(device)
-            with torch.no_grad():
-                logits = model_unet(frame_t_0)
-                probs = torch.sigmoid(logits).squeeze().cpu().numpy()
-                mask_0 = (probs > 0.8).astype(np.uint8)
-                num, labels, stats, _ = cv2.connectedComponentsWithStats(mask_0)
-                if num > 1:
-                    largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-                    mask_0 = (labels == largest).astype(np.uint8)
-            contour_data_0 = process_mask(mask_0, frame_rgb_0)
-            st.session_state["_def_seg_mask"] = mask_0
-            st.session_state["_def_seg_contour"] = contour_data_0
-            st.session_state["_def_seg_frame_rgb"] = frame_rgb_0
+            expert = expert_for_upload(uploaded_file.name, T)
         except Exception as e:
-            st.error(f"Default frame pre-computation: {e}")
+            expert = None
+            st.caption(f"Expert labels unavailable: {e}")
 
     # ============================
     # VIDEO COMPARISON SECTION
@@ -369,64 +372,95 @@ if uploaded_file is not None:
                 unsafe_allow_html=True,
             )
 
+    st.markdown("<div style='padding-top:1rem;'></div>", unsafe_allow_html=True)
+    ef_cols = st.columns(3 if expert else 2)
+    ef_cols[0].metric("ResNet18 regression", f"{ef_predicted:.1f}%" if ef_predicted is not None else "—")
+    ef_cols[1].metric(
+        "From segmentation (method of disks)",
+        f"{ef_seg['ef']:.1f}%" if ef_seg else "—",
+        help="20-disk Simpson's rule on the U-Net mask for every frame; EF is computed for "
+             "each detected heartbeat (ED peak to the following ES minimum) and the median "
+             "over beats is shown.",
+    )
+    if expert:
+        ef_cols[2].metric(f"Expert (EchoNet FileList, {expert['split']} split)", f"{expert['ef']:.1f}%")
+
     st.markdown("---")
 
     # --- Segmentation ---
     st.header("Left Ventricle Segmentation")
-    seg_frame = st.slider("Select frame", 0, frames_gray.shape[0] - 1, 0)
 
-    frame = cv2.resize(
-        frames_gray[seg_frame],
-        (FRAME_SIZE_SEG, FRAME_SIZE_SEG),
-    )
-    frame_rgb = np.stack([frame] * 3, axis=-1).astype(np.uint8)
+    if masks is not None:
+        if expert and expert["phase"]:
+            st.caption("Expert-traced frames: " + ", ".join(f"{p} = frame {f}" for f, p in sorted(expert["phase"].items())))
+        seg_frame = st.slider("Select frame", 0, T - 1, 0)
 
-    try:
-        if seg_frame == 0 and "_def_seg_mask" in st.session_state:
-            mask = st.session_state["_def_seg_mask"]
-            contour_data = st.session_state["_def_seg_contour"]
-            frame_rgb = st.session_state["_def_seg_frame_rgb"]
-        else:
-            frame_input = np.stack([frame.astype(np.float32)] * 3, axis=-1)
-            frame_input = normalize_image(frame_input)
-            frame_t = torch.from_numpy(frame_input).permute(2, 0, 1).unsqueeze(0).float().to(device)
-            with torch.no_grad():
-                logits = model_unet(frame_t)
-                probs = torch.sigmoid(logits).squeeze().cpu().numpy()
-                mask = (probs > 0.8).astype(np.uint8)
-                num, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
-                if num > 1:
-                    largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-                    mask = (labels == largest).astype(np.uint8)
-            contour_data = process_mask(mask, frame_rgb)
+        frame = frames_gray[seg_frame]
+        frame_rgb = np.stack([frame] * 3, axis=-1).astype(np.uint8)
+        mask = masks[seg_frame]
+        overlay_img, contour_data = render_overlay(frame, mask)
+        m = contour_data["measurement"]
 
         st.markdown("<h3 style='text-align:center;'>U-Net Segmentation Results</h3>", unsafe_allow_html=True)
 
         _, col3, _, col4, _, col5, _ = st.columns([0.5, 2, 0.5, 2, 0.5, 2, 0.5])
         with col3:
-            st.image(frame_rgb, caption="Original Frame", channels="GRAY", width='stretch')
+            st.image(frame_rgb, caption="Original Frame", width='stretch')
         with col4:
-            overlay_img = overlay_mask(frame_rgb, mask)
-            st.image(overlay_img, caption="Mask Overlay", width='stretch')
+            st.image(overlay_mask(frame_rgb, mask), caption="Mask Overlay", width='stretch')
         with col5:
-            if contour_data["overlay"] is not None:
-                st.image(contour_data["overlay"], caption="Contours & Key Points", width='stretch')
+            st.image(overlay_img, caption="Long axis, 20 disks & landmarks", width='stretch')
 
-        if contour_data["area_px"] is not None:
-            st.info(f"LV Area: {contour_data['area_px']:.0f} px²")
-        if contour_data["keypoints"]:
-            kp = contour_data["keypoints"]
-            st.json({
-                "centroid": [round(v, 1) for v in kp["centroid"]] if kp["centroid"] else None,
-                "apex": [round(v, 1) for v in kp["apex"]] if kp["apex"] else None,
-                "basal_septal": [round(v, 1) for v in kp["basal_septal"]] if kp["basal_septal"] else None,
-                "basal_lateral": [round(v, 1) for v in kp["basal_lateral"]] if kp["basal_lateral"] else None,
-                "mid_septal": [round(v, 1) for v in kp["mid_septal"]] if kp["mid_septal"] else None,
-                "mid_lateral": [round(v, 1) for v in kp["mid_lateral"]] if kp["mid_lateral"] else None,
-            })
+        mcols = st.columns(4)
+        if m:
+            mcols[0].metric("LV area", f"{m['area'] / S**2:.0f} px²")
+            mcols[1].metric("Long axis (apex → annulus)", f"{m['length'] / S:.1f} px")
+            mcols[2].metric("Disk volume (single plane)", f"{m['volume'] / S**3:,.0f} px³")
+            mcols[3].metric("Mid-cavity width", f"{m['diameters'][len(m['diameters']) // 2] / S:.1f} px")
+            st.caption("Measured on the 112×112 EchoNet pixel grid. The videos carry no pixel spacing, "
+                       "so values are in pixels; EF is a ratio and needs no calibration.")
+        else:
+            st.info("No left ventricle segmented on this frame.")
 
-    except Exception as e:
-        st.error(f"U-Net: {e}")
+        gt = expert["gt"].get(seg_frame) if expert else None
+        if gt is not None:
+            both = frame_rgb.copy()
+            cv2.drawContours(both, [np.rint(gt["polygon"]).astype(np.int32).reshape(-1, 1, 2)], -1, (0, 255, 0), 1, cv2.LINE_AA)
+            if m:
+                cv2.drawContours(both, [m["contour"]], -1, (255, 60, 60), 1, cv2.LINE_AA)
+            _, cg, _, ct, _ = st.columns([0.5, 2, 0.5, 4.5, 0.5])
+            with cg:
+                st.image(both, caption=f"{expert['phase'].get(seg_frame, '')} frame: expert (green) vs U-Net (red)", width='stretch')
+            with ct:
+                rows = {
+                    "LV area (px²)": (gt["area"] / S**2, m["area"] / S**2 if m else None),
+                    "Long axis (px)": (gt["length"] / S, m["length"] / S if m else None),
+                    "Disk volume (px³)": (gt["volume"] / S**3, m["volume"] / S**3 if m else None),
+                }
+                st.markdown(f"**Against the expert tracing** — Dice {dice(m['region'], gt['region']) if m else 0:.3f}")
+                st.table({
+                    "measure": list(rows),
+                    "expert": [f"{e:,.1f}" for e, _ in rows.values()],
+                    "U-Net": [f"{p:,.1f}" if p is not None else "—" for _, p in rows.values()],
+                })
+
+        # LV area over the clip
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=areas, mode="lines", name="LV area", line=dict(color="#2563eb", width=2)))
+        if ef_seg:
+            beats = ef_seg["beats"] or [(ef_seg["ed_frame"], ef_seg["es_frame"], ef_seg["ef"])]
+            for pos, name, color, symbol in ((0, "detected ED", "#16a34a", "triangle-down"),
+                                             (1, "detected ES", "#ea580c", "triangle-up")):
+                fs = [b[pos] for b in beats]
+                fig.add_trace(go.Scatter(x=fs, y=areas[fs], mode="markers", name=name,
+                                         marker=dict(color=color, size=12, symbol=symbol)))
+        for f, p in (expert["phase"].items() if expert else []):
+            fig.add_vline(x=f, line_dash="dash", line_color="#16a34a" if p == "ED" else "#ea580c",
+                          annotation_text=f"expert {p}", annotation_position="top")
+        fig.add_vline(x=seg_frame, line_color="#94a3b8", line_width=1)
+        fig.update_layout(title="LV area per frame (U-Net)", xaxis_title="frame", yaxis_title="area (px²)",
+                          height=320, margin=dict(l=40, r=20, t=50, b=40), legend=dict(orientation="h", y=-0.3))
+        st.plotly_chart(fig, width='stretch')
 
     # --- Google Gemini AI Section ---
     st.header("AI-Powered Analysis (Gemini)")

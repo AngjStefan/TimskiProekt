@@ -7,8 +7,8 @@ import sys
 
 from src.config import (
     MODELS_DIR, REGRESSION_LR, REGRESSION_WEIGHT_DECAY,
-    REGRESSION_EPOCHS, REGRESSION_BATCH_SIZE, REGRESSION_PATIENCE,
-    REGRESSION_BACKBONE, DEVICE, SUBSET_SIZE,
+    REGRESSION_EPOCHS, REGRESSION_PATIENCE,
+    REGRESSION_BACKBONE, SUBSET_SIZE, get_device, default_regression_batch_size,
 )
 from src.models.regression import EchoResNet
 from src.preprocessing.dataset import get_regression_loaders
@@ -71,16 +71,18 @@ def validate(
 
 
 def main(backbone: str | None = None, subset_size: int | None = None,
-         file_list: str | None = None):
-    device = torch.device(DEVICE if torch.cuda.is_available() else "cpu")
+         file_list: str | None = None, batch_size: int | None = None):
+    device = get_device()
     print(f"Device: {device}")
 
     bb = backbone or REGRESSION_BACKBONE
     ss = subset_size if subset_size is not None else SUBSET_SIZE
     fl = Path(file_list) if file_list else None
 
+    bs = batch_size or default_regression_batch_size(device)
+    print(f"Batch size: {bs}")
     train_loader, val_loader, test_loader = get_regression_loaders(
-        batch_size=REGRESSION_BATCH_SIZE,
+        batch_size=bs,
         subset_size=ss,
         file_list=fl,
     )
@@ -125,7 +127,7 @@ def main(backbone: str | None = None, subset_size: int | None = None,
     # final test
     ckpt = MODELS_DIR / f"{bb}_ef.pth"
     if ckpt.exists():
-        model.load_state_dict(torch.load(ckpt))
+        model.load_state_dict(torch.load(ckpt, map_location=device))
     if len(test_loader) > 0:
         test_loss = validate(model, test_loader, criterion, device)
         print(f"Test MSE: {test_loss:.6f}  (RMSE: {test_loss**0.5:.4f})")
@@ -137,6 +139,7 @@ if __name__ == "__main__":
     parser.add_argument("--backbone", default="resnet34")
     parser.add_argument("--subset", type=int, default=None)
     parser.add_argument("--file-list", type=str, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
     args = parser.parse_args()
     main(backbone=args.backbone, subset_size=args.subset,
-         file_list=args.file_list)
+         file_list=args.file_list, batch_size=args.batch_size)

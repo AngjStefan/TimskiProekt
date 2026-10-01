@@ -7,7 +7,7 @@ import sys
 
 from src.config import (
     MODELS_DIR, SEG_LR, SEG_WEIGHT_DECAY, SEG_EPOCHS,
-    SEG_BATCH_SIZE, SEG_PATIENCE, DEVICE, SUBSET_SIZE,
+    SEG_BATCH_SIZE, SEG_PATIENCE, SUBSET_SIZE, get_device,
 )
 from src.models.segmentation import UNet
 from src.preprocessing.dataset import get_segmentation_loaders
@@ -94,7 +94,7 @@ def validate(
 
 
 def main(subset_size: int | None = None, file_list: str | None = None):
-    device = torch.device(DEVICE if torch.cuda.is_available() else "cpu")
+    device = get_device()
     print(f"Device: {device}")
 
     ss = subset_size if subset_size is not None else SUBSET_SIZE
@@ -151,7 +151,7 @@ def main(subset_size: int | None = None, file_list: str | None = None):
     # test
     ckpt = MODELS_DIR / "unet_lv.pth"
     if ckpt.exists():
-        model.load_state_dict(torch.load(ckpt))
+        model.load_state_dict(torch.load(ckpt, map_location=device))
     if len(test_loader) > 0:
         test_loss = validate(model, test_loader, bce, dice, device)
         print(f"Test loss (BCE+Dice): {test_loss:.6f}")

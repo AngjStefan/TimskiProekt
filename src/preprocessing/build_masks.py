@@ -46,14 +46,19 @@ def build_all_masks(
         pad_y = (frame_size - new_h) // 2
         pad_x = (frame_size - new_w) // 2
 
+        # Row 0 is the long axis (apex -> mitral annulus midpoint), not a wall
+        # point; only rows 1.. are the disk chords whose endpoints trace the
+        # walls. Same as the official EchoNet loader (x1[1:], flip(x2[1:])).
+        chords = grp.iloc[1:]
+
         left = np.stack([
-            grp["X1"].values * scale + pad_x,
-            grp["Y1"].values * scale + pad_y,
+            chords["X1"].values * scale + pad_x,
+            chords["Y1"].values * scale + pad_y,
         ], axis=1)
 
         right = np.stack([
-            grp["X2"].values[::-1] * scale + pad_x,
-            grp["Y2"].values[::-1] * scale + pad_y,
+            chords["X2"].values[::-1] * scale + pad_x,
+            chords["Y2"].values[::-1] * scale + pad_y,
         ], axis=1)
 
         contour = np.concatenate(
